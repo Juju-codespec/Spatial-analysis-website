@@ -1,0 +1,38 @@
+Local Cox PH models (n = 5 samples)
+Ripley's K (L-r at r=50) ~ survival:
+Call:
+survival::coxph(formula = survival::Surv(time, status) ~ ripley_k_L_minus_r_at_r50, 
+    data = joined)
+
+  n= 5, number of events= 5 
+
+                               coef exp(coef)  se(coef)      z Pr(>|z|)
+ripley_k_L_minus_r_at_r50 -0.006056  0.993963  0.011232 -0.539     0.59
+
+                          exp(coef) exp(-coef) lower .95 upper .95
+ripley_k_L_minus_r_at_r50     0.994      1.006    0.9723     1.016
+
+Concordance= 0.5  (se = 0.245 )
+Likelihood ratio test= 0.31  on 1 df,   p=0.6
+Wald test            = 0.29  on 1 df,   p=0.6
+Score (logrank) test = 0.3  on 1 df,   p=0.6
+
+
+NN G deviation (at r=20) ~ survival:
+Call:
+survival::coxph(formula = survival::Surv(time, status) ~ nn_g_deviation_at_r20, 
+    data = joined)
+
+  n= 5, number of events= 5 
+
+                         coef exp(coef) se(coef)      z Pr(>|z|)
+nn_g_deviation_at_r20 -1.2500    0.2865   4.0976 -0.305     0.76
+
+                      exp(coef) exp(-coef) lower .95 upper .95
+nn_g_deviation_at_r20    0.2865       3.49 9.317e-05       881
+
+Concordance= 0.4  (se = 0.179 )
+Likelihood ratio test= 0.09  on 1 df,   p=0.8
+Wald test            = 0.09  on 1 df,   p=0.8
+Score (logrank) test = 0.09  on 1 df,   p=0.8
+

@@ -1,0 +1,39 @@
+Package: spatialPortalApi
+Type: Package
+Title: REST Backend for the Spatial Portal Web Application
+Version: 0.1.0
+Authors@R: person("Spatial Portal", "Team", email = "spatial@example.com", role = c("aut", "cre"))
+Description: A plumber-based REST API that ingests Vectra Polaris / VPD-style
+    tumor imaging data (bundled VectraPolarisData cohorts and user-uploaded
+    CSVs), computes spatial statistics (Ripley's K, Nearest Neighbour G) for
+    immune cell populations, and links those summaries to survival outcomes
+    via Cox proportional hazards models.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.2)
+Imports:
+    plumber (>= 1.2.0),
+    spatstat.geom,
+    spatstat.explore,
+    spatstat.random,
+    survival,
+    dplyr,
+    data.table,
+    jsonlite,
+    future,
+    promises,
+    uuid,
+    vroom,
+    logger
+Suggests:
+    SpatialExperiment,
+    VectraPolarisData,
+    MultiAssayExperiment,
+    SummarizedExperiment,
+    S4Vectors,
+    testthat (>= 3.0.0),
+    httr,
+    callr
+Config/testthat/edition: 3
+RoxygenNote: 7.3.2

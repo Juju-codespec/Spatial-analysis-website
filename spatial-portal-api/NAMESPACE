@@ -1,0 +1,3 @@
+# Generated manually for the spatial-portal-api service. The R files in
+# this project are sourced at runtime by main.R rather than installed as a
+# package, so the NAMESPACE is intentionally minimal.

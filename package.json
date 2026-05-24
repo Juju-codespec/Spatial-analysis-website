@@ -1,0 +1,13 @@
+{
+  "name": "spatial-portal-workspace",
+  "private": true,
+  "description": "Local dev workspace for spatial-portal (React) + spatial-portal-api (R)",
+  "scripts": {
+    "install:local": "./scripts/install-local.sh",
+    "dev": "./scripts/dev.sh",
+    "api": "cd spatial-portal-api && ENABLE_VPD=false CORS_ORIGIN=http://localhost:5173,http://localhost:5174 Rscript R/main.R",
+    "web": "cd spatial-portal && npm run dev",
+    "seed:test1": "./scripts/seed-test1.sh",
+    "build": "cd spatial-portal && npm run build"
+  }
+}
