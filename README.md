@@ -29,3 +29,4 @@ API docs when running: http://127.0.0.1:8000/__docs__/
 
 - Node.js 18+ (or use the bundled binary via `install-local.sh`)
 - R 4.2+ with packages listed in `spatial-portal-api/scripts/install_deps.R`
+# Spatial-analysis-website
