@@ -1,0 +1,26 @@
+# Bundled Node binary tree (see scripts/install-local.sh; use system Node or re-download locally)
+node-bin/
+
+# Dependencies & build output
+node_modules/
+dist/
+dist-ssr/
+
+# R API cache (large VPD downloads)
+spatial-portal-api/data-cache/*
+!spatial-portal-api/data-cache/.gitkeep
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# OS / editor
+.DS_Store
+*.log
+
+# R user/session files
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
