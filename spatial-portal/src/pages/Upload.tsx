@@ -7,7 +7,7 @@ import {
 import { useStore } from '../store/useStore';
 import type { Dataset, SpatialLayer } from '../types';
 import { parseFile, detectFormat } from '../utils/cellParser';
-import { uploadDataset, ApiError } from '../api/client';
+import { uploadDataset, ApiError, getDataset, getCells } from '../api/client';
 import clsx from 'clsx';
 
 const STEPS = [
@@ -17,11 +17,22 @@ const STEPS = [
   { id: 4, label: 'Review & Submit', icon: Eye },
 ];
 
-const ACCEPTED_TYPES = ['.csv', '.xlsx', '.geojson', '.json', '.tsv'];
+const ACCEPTED_TYPES = ['.csv', '.xlsx', '.geojson', '.json', '.tsv', '.rds'];
 // Cap how many cells we keep in memory for client-side plotting. Mirrors the
 // `downsample: 30000` used by the R API in useStore.hydrateDatasetCells so the
 // SpatialPlot canvas never has to render hundreds of thousands of points.
 const PLOT_CELL_CAP = 30000;
+// Files larger than this are parsed on the R server only (avoids browser OOM).
+const SERVER_PARSE_BYTES = 2 * 1024 * 1024;
+
+function isDataFile(f: File): boolean {
+  const n = f.name.toLowerCase();
+  return n.endsWith('.rds') || n.endsWith('.csv') || n.endsWith('.tsv');
+}
+
+function isServerSideParse(f: File): boolean {
+  return f.name.toLowerCase().endsWith('.rds') || f.size > SERVER_PARSE_BYTES;
+}
 
 function sampleEvenly<T>(arr: T[], n: number): T[] {
   if (arr.length <= n) return arr;
@@ -136,7 +147,96 @@ export default function UploadPage() {
     const markerList = meta.markers.split(',').map(m => m.trim()).filter(Boolean);
     setParseError(null);
 
+    const dataFile = files.find(isDataFile);
+    const rdsFile = files.find(f => f.name.toLowerCase().endsWith('.rds'));
     const textFile = files.find(f => f.name.endsWith('.csv') || f.name.endsWith('.tsv'));
+
+    if (!dataFile) {
+      setErrors({ submit: 'Please upload a CSV, TSV, or RDS (SpatialExperiment) file.' });
+      setSubmitting(false);
+      return;
+    }
+
+    const survivalFile = files.find(f =>
+      /survival/i.test(f.name) && (f.name.endsWith('.csv') || f.name.endsWith('.tsv'))
+    );
+
+    let cells: import('../types').CellPoint[] = [];
+    let cellCount = 0;
+    let sampleCount = 1;
+    let uniqueCellTypes: string[] = [];
+
+    if (isServerSideParse(dataFile)) {
+      // RDS and large CSV/TSV: parse on the R backend only.
+      try {
+        const resp = await uploadDataset(dataFile, {
+          title: meta.title || undefined,
+          cancer_type: meta.cancerType || undefined,
+          tissue: meta.tissue || undefined,
+          survival: survivalFile,
+        });
+        const detail = await getDataset(resp.id);
+        const cellResp = await getCells(resp.id, { downsample: PLOT_CELL_CAP });
+        cellCount = detail.meta.n_cells;
+        sampleCount = detail.meta.sample_count;
+        uniqueCellTypes = detail.meta.cell_types ?? Object.keys(detail.cell_types);
+        cells = cellResp.cells.map(c => ({
+          x: c.x,
+          y: c.y,
+          cellType: c.cell_type,
+          markers: {},
+        }));
+        setParsedCellCount(cellCount);
+        setServerDatasetId(resp.id);
+        setServerWarning(null);
+        void loadDatasets();
+
+        const layers: SpatialLayer[] = uniqueCellTypes.map((ct, i) => ({
+          id: `ct_${i}`,
+          name: ct,
+          type: 'cell' as const,
+          cellType: ct,
+          color: CELL_TYPE_COLORS[ct] ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length],
+          visible: true,
+          opacity: 0.85,
+        }));
+
+        addDataset({
+          id: resp.id,
+          title: meta.title,
+          description: meta.description,
+          cancerType: meta.cancerType,
+          tissue: meta.tissue,
+          technique: meta.technique,
+          markers: markerList,
+          cellTypes: uniqueCellTypes,
+          contributor: currentUser!.name,
+          contributorId: currentUser!.id,
+          institution: currentUser!.institution,
+          date: new Date().toISOString().split('T')[0],
+          isPublic: meta.isPublic,
+          status: 'published',
+          tags: [meta.cancerType, meta.technique].filter(Boolean),
+          cellCount,
+          sampleCount,
+          doi: meta.doi || undefined,
+          cells,
+          layers,
+          methods: meta.methods,
+          dataSource: rdsFile ? 'RDS upload (SpatialExperiment)' : currentUser!.institution,
+          viewCount: 0,
+          downloads: 0,
+        });
+        setSubmitting(false);
+        setSubmitted(true);
+        return;
+      } catch (e) {
+        const msg = e instanceof ApiError ? e.message : (e as Error).message;
+        setParseError(msg);
+        setSubmitting(false);
+        return;
+      }
+    }
 
     if (!textFile) {
       setErrors({ submit: 'Please upload a CSV or TSV file containing your cell data.' });
@@ -144,16 +244,17 @@ export default function UploadPage() {
       return;
     }
 
-    const { cells, error } = await parseFile(textFile, colMap);
+    const parsed = await parseFile(textFile, colMap);
 
-    if (error) {
-      setParseError(error);
+    if (parsed.error) {
+      setParseError(parsed.error);
       setSubmitting(false);
       return;
     }
 
+    cells = parsed.cells;
     setParsedCellCount(cells.length);
-    const uniqueCellTypes = [...new Set(cells.map(c => c.cellType))].filter(Boolean);
+    uniqueCellTypes = [...new Set(cells.map(c => c.cellType))].filter(Boolean);
     const displayCells = sampleEvenly(cells, PLOT_CELL_CAP);
 
     const layers: SpatialLayer[] = uniqueCellTypes.map((ct, i) => ({
@@ -290,7 +391,10 @@ export default function UploadPage() {
           {step === 1 && (
             <div>
               <h2 className="text-base font-semibold text-slate-200 mb-1">Upload Your Files</h2>
-              <p className="text-xs text-slate-500 mb-5">Accepted formats: CSV, Excel, GeoJSON, TSV. Max 500MB per file.</p>
+              <p className="text-xs text-slate-500 mb-5">
+                Accepted formats: CSV, TSV, RDS (SpatialExperiment), Excel, GeoJSON. Max 500MB per file.
+                Large files and <code className="text-brand-400">.rds</code> uploads are parsed on the server.
+              </p>
 
               <div
                 onDrop={handleFileDrop}
@@ -334,6 +438,16 @@ export default function UploadPage() {
           {step === 2 && (
             <div>
               <h2 className="text-base font-semibold text-slate-200 mb-1">Map Your Columns</h2>
+              {files.some(f => f.name.toLowerCase().endsWith('.rds')) ? (
+                <div className="p-4 border border-brand-700/50 bg-brand-950/30 rounded-lg text-xs text-brand-300">
+                  <p className="font-semibold mb-1">RDS / SpatialExperiment detected</p>
+                  <p className="text-brand-400/80">
+                    Coordinates and phenotype columns are extracted automatically on the server.
+                    Continue to metadata — no column mapping needed.
+                  </p>
+                </div>
+              ) : (
+              <>
               <p className="text-xs text-slate-500 mb-4">Tell us which columns correspond to spatial coordinates and cell identifiers.</p>
 
               {isMultiPhenotype && (
@@ -397,6 +511,8 @@ export default function UploadPage() {
                   </div>
                 )}
               </div>
+              </>
+              )}
             </div>
           )}
 

@@ -57,6 +57,15 @@ test_that("convex hull window is used by default", {
   expect_true(res$per_sample[[1]]$tissue_area > 0)
 })
 
+test_that("min_focal_cells excludes samples below threshold", {
+  cells <- make_synthetic_cells(n_per_sample = 200, n_samples = 4)
+  res_all <- ripleys_k(cells, type_a = "CD8+ T Cell", min_focal_cells = 1L)
+  res_strict <- ripleys_k(cells, type_a = "CD8+ T Cell", min_focal_cells = 200L)
+  expect_gt(res_all$n_samples_analyzed, 0L)
+  expect_equal(res_strict$n_samples_analyzed, 0L)
+  expect_gt(res_strict$n_samples_excluded, 0L)
+})
+
 test_that("CSR envelopes are optional", {
   cells <- make_synthetic_cells(n_per_sample = 150, n_samples = 1, clustered = TRUE)
   res <- ripleys_k(cells, type_a = "CD8+ T Cell", nsim = 19L)

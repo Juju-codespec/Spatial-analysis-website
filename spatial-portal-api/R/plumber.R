@@ -95,6 +95,7 @@ function(id, sample_id = NULL, cell_type = NULL, downsample = NULL, res) {
 }
 
 #* Upload a new dataset.
+#* Accepts multipart `cells` (CSV/TSV) or `rds`/`spe` (SpatialExperiment).
 #* @param title:character Optional dataset title.
 #* @param cancer_type:character Optional cancer type label.
 #* @param tissue:character Optional tissue label.
@@ -103,20 +104,51 @@ function(id, sample_id = NULL, cell_type = NULL, downsample = NULL, res) {
 function(req, res, title = NULL, cancer_type = NA_character_,
          tissue = NA_character_) {
   files <- req$body
+  ds_id <- paste0("upload-", substr(uuid::UUIDgenerate(), 1L, 8L))
+  ds_title <- title %||% sprintf("Upload %s", format(Sys.time(), "%Y-%m-%d %H:%M"))
+
+  rds_part <- find_part(files, c("rds", "spe", "spatial"))
   cells_part <- find_part(files, c("cells", "cells.csv", "cells_csv", "file"))
-  if (is.null(cells_part)) {
+  if (is.null(rds_part) && is.null(cells_part)) {
     res$status <- 400L
-    return(list(error = "missing_cells", message = "cells CSV part required"))
+    return(list(error = "missing_cells",
+                message = "cells CSV or rds/spe part required"))
   }
 
-  cells_path <- write_part_to_tmp(cells_part, suffix = ".csv")
-  cells <- tryCatch(parse_cells_csv(cells_path), error = function(e) e)
-  if (inherits(cells, "error")) {
-    res$status <- 400L
-    return(list(error = "parse_cells", message = conditionMessage(cells)))
+  if (!is.null(rds_part) || is_rds_part(cells_part)) {
+    upload_part <- rds_part %||% cells_part
+    rds_path <- write_part_to_tmp(upload_part, suffix = ".rds")
+    ds <- tryCatch(
+      parse_rds_upload(
+        rds_path,
+        id = ds_id,
+        title = ds_title,
+        cancer_type = cancer_type %||% NA_character_,
+        tissue = tissue %||% NA_character_
+      ),
+      error = function(e) e
+    )
+    if (inherits(ds, "error")) {
+      res$status <- 400L
+      return(list(error = "parse_rds", message = conditionMessage(ds)))
+    }
+  } else {
+    cells_path <- write_part_to_tmp(cells_part, suffix = ".csv")
+    cells <- tryCatch(parse_cells_csv(cells_path), error = function(e) e)
+    if (inherits(cells, "error")) {
+      res$status <- 400L
+      return(list(error = "parse_cells", message = conditionMessage(cells)))
+    }
+    ds <- build_uploaded_dataset(
+      id = ds_id,
+      title = ds_title,
+      cells = cells,
+      survival = NULL,
+      cancer_type = cancer_type %||% NA_character_,
+      tissue = tissue %||% NA_character_
+    )
   }
 
-  surv_df <- NULL
   surv_part <- find_part(files, c("survival", "survival.csv"))
   if (!is.null(surv_part)) {
     surv_path <- write_part_to_tmp(surv_part, suffix = ".csv")
@@ -125,17 +157,14 @@ function(req, res, title = NULL, cancer_type = NA_character_,
       res$status <- 400L
       return(list(error = "parse_survival", message = conditionMessage(surv_df)))
     }
+    ds$survival <- surv_df
+    if (nrow(surv_df) > 0L) {
+      keep <- surv_df$sample_id %in% ds$samples$sample_id |
+              surv_df$sample_id %in% ds$samples$patient_id
+      ds$survival <- surv_df[keep, , drop = FALSE]
+    }
   }
 
-  ds_id <- paste0("upload-", substr(uuid::UUIDgenerate(), 1L, 8L))
-  ds <- build_uploaded_dataset(
-    id = ds_id,
-    title = title %||% sprintf("Upload %s", format(Sys.time(), "%Y-%m-%d %H:%M")),
-    cells = cells,
-    survival = surv_df,
-    cancer_type = cancer_type %||% NA_character_,
-    tissue = tissue %||% NA_character_
-  )
   save_dataset(ds)
   list(id = ds_id, meta = ds$meta, message = "Dataset uploaded")
 }
@@ -260,23 +289,31 @@ run_spatial_endpoint <- function(body, res, kind = c("K", "G")) {
   r_grid <- if (!is.null(r_max)) seq(0, as.numeric(r_max), length.out = 80L) else NULL
   correction <- body$correction %||% (if (kind == "K") "iso" else "km")
   window_type <- body$windowType %||% body$window_type %||% "convex"
-  nsim <- as.integer(body$nsim %||% body$nSim %||% 0L)
+  nsim <- as.integer(body$nsim %||% body$nSim %||% cfg()$default_nsim)
   if (nsim < 0L) nsim <- 0L
-  async <- isTRUE(body$async)
+  min_focal_cells <- as.integer(body$minFocalCells %||% body$min_focal_cells %||% 10L)
+  if (min_focal_cells < 1L) min_focal_cells <- 1L
 
   ds <- load_dataset(dataset_id)
+  async <- if ("async" %in% names(body)) {
+    isTRUE(body$async)
+  } else {
+    nsim > 0L || nrow(ds$cells) > cfg()$async_cells_threshold
+  }
 
   fn <- function() {
     if (kind == "K") {
       ripleys_k(ds$cells, sample_ids = sample_ids, type_a = type_a,
                 type_b = type_b, r = r_grid, correction = correction,
                 max_cells = cfg()$max_cells_per_sample,
-                window_type = window_type, nsim = nsim)
+                window_type = window_type, nsim = nsim,
+                min_focal_cells = min_focal_cells)
     } else {
       nn_g(ds$cells, sample_ids = sample_ids, type_a = type_a,
            type_b = type_b, r = r_grid, correction = correction,
            max_cells = cfg()$max_cells_per_sample,
-           window_type = window_type, nsim = nsim)
+           window_type = window_type, nsim = nsim,
+           min_focal_cells = min_focal_cells)
     }
   }
 
@@ -326,16 +363,34 @@ function(req, res) {
   if (is.list(covariates)) covariates <- unlist(covariates)
   adjust_density <- isTRUE(body$adjustDensity %||% body$adjust_density)
   cluster_patients <- !isFALSE(body$clusterPatients %||% body$cluster_patients)
+  min_focal_cells <- as.integer(body$minFocalCells %||% body$min_focal_cells %||% 10L)
+  if (min_focal_cells < 1L) min_focal_cells <- 1L
+  nsim_cox <- 0L
 
   r_grid <- seq(0, max(2 * radius, 10), length.out = 80L)
   spatial_res <- if (statistic == "K") {
     ripleys_k(ds$cells, type_a = type_a, type_b = type_b, r = r_grid,
               correction = correction, max_cells = cfg()$max_cells_per_sample,
-              window_type = window_type)
+              window_type = window_type, nsim = nsim_cox,
+              min_focal_cells = min_focal_cells)
   } else {
     nn_g(ds$cells, type_a = type_a, type_b = type_b, r = r_grid,
          correction = correction, max_cells = cfg()$max_cells_per_sample,
-         window_type = window_type)
+         window_type = window_type, nsim = nsim_cox,
+         min_focal_cells = min_focal_cells)
+  }
+  if (length(spatial_res$per_sample) == 0L) {
+    res$status <- 400L
+    return(list(
+      error = "no_samples_after_filter",
+      message = sprintf(
+        "No samples passed the minimum focal-cell threshold (%d %s cells).",
+        min_focal_cells, type_a
+      ),
+      min_focal_cells = min_focal_cells,
+      n_samples_total = spatial_res$n_samples_total %||% 0L,
+      n_samples_excluded = spatial_res$n_samples_excluded %||% 0L
+    ))
   }
   per_sample_stat <- spatial_summary_at_r(spatial_res, radius = radius,
                                           statistic = statistic)
@@ -383,8 +438,15 @@ function(req, res) {
                       dichotomize = dichotomize,
                       covariates = covariates,
                       adjust_density = adjust_density,
-                      cluster_patients = cluster_patients),
+                      cluster_patients = cluster_patients,
+                      min_focal_cells = min_focal_cells),
     stat_summary = per_sample_stat,
+    sample_filter = list(
+      min_focal_cells = min_focal_cells,
+      n_samples_total = spatial_res$n_samples_total,
+      n_samples_analyzed = spatial_res$n_samples_analyzed,
+      n_samples_excluded = spatial_res$n_samples_excluded
+    ),
     cox        = cox
   )
 }
@@ -423,6 +485,17 @@ find_part <- function(parts, candidates) {
     if (length(hit) > 0L) return(parts[[hit[1]]])
   }
   NULL
+}
+
+part_filename <- function(part) {
+  if (is.list(part) && !is.null(part$filename)) return(part$filename)
+  NULL
+}
+
+is_rds_part <- function(part) {
+  fn <- part_filename(part)
+  if (!is.null(fn) && grepl("\\.rds$", fn, ignore.case = TRUE)) return(TRUE)
+  FALSE
 }
 
 write_part_to_tmp <- function(part, suffix = ".csv") {

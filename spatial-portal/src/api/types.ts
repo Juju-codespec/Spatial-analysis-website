@@ -79,6 +79,10 @@ export interface SpatialAnalysisResponse<TPerSample> {
   correction: string;
   window_type?: string;
   nsim?: number;
+  min_focal_cells?: number;
+  n_samples_total?: number;
+  n_samples_analyzed?: number;
+  n_samples_excluded?: number;
   per_sample: TPerSample[];
   summary: {
     r: number[];
@@ -139,6 +143,7 @@ export interface CoxResponse {
     covariates: string[];
     adjust_density?: boolean;
     cluster_patients?: boolean;
+    min_focal_cells?: number;
   };
   stat_summary: Array<{
     sample_id: string;
@@ -146,6 +151,12 @@ export interface CoxResponse {
     n_focal?: number;
     tissue_area?: number;
   }>;
+  sample_filter?: {
+    min_focal_cells: number;
+    n_samples_total: number;
+    n_samples_analyzed: number;
+    n_samples_excluded: number;
+  };
   cox: CoxResult;
 }
 

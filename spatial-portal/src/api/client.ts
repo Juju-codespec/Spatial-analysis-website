@@ -86,7 +86,7 @@ export const getCells = (
 };
 
 export const uploadDataset = (
-  cells: File,
+  file: File,
   options: {
     survival?: File;
     title?: string;
@@ -95,7 +95,12 @@ export const uploadDataset = (
   } = {},
 ): Promise<{ id: string; meta: ApiDatasetMeta; message: string }> => {
   const form = new FormData();
-  form.append('cells', cells, cells.name);
+  const isRds = file.name.toLowerCase().endsWith('.rds');
+  if (isRds) {
+    form.append('rds', file, file.name);
+  } else {
+    form.append('cells', file, file.name);
+  }
   if (options.survival) form.append('survival', options.survival, options.survival.name);
   if (options.title) form.append('title', options.title);
   if (options.cancer_type) form.append('cancer_type', options.cancer_type);
@@ -141,6 +146,7 @@ export interface RipleyKRequest {
   correction?: string;
   windowType?: 'convex' | 'bbox';
   nsim?: number;
+  minFocalCells?: number;
   async?: boolean;
 }
 
@@ -168,6 +174,7 @@ export interface CoxRequest {
   covariates?: string[];
   adjustDensity?: boolean;
   clusterPatients?: boolean;
+  minFocalCells?: number;
 }
 
 export const analyzeCox = (req: CoxRequest) =>

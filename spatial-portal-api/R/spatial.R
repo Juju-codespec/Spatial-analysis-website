@@ -29,27 +29,34 @@
 #' @param window_type Observation window: "convex" (tissue convex hull,
 #'   default) or "bbox" (axis-aligned rectangle).
 #' @param nsim Number of CSR simulations for envelope bands; 0 skips envelopes.
+#' @param min_focal_cells Minimum focal (type_a) cells required per sample;
+#'   samples below this threshold are excluded from analysis.
 #' @return A list with `per_sample` (list of tibbles) and `summary`
 #'   (aggregated mean K across samples).
 ripleys_k <- function(cells, sample_ids = NULL, type_a, type_b = NULL,
                       r = NULL, correction = "iso", max_cells = NULL,
-                      window_type = c("convex", "bbox"), nsim = 0L) {
+                      window_type = c("convex", "bbox"), nsim = 0L,
+                      min_focal_cells = 10L) {
   window_type <- match.arg(window_type)
   require_spatstat()
   stopifnot(data.table::is.data.table(cells))
   if (is.null(sample_ids)) sample_ids <- unique(cells$sample_id)
+  min_focal_cells <- as.integer(min_focal_cells %||% 10L)
+  if (min_focal_cells < 1L) min_focal_cells <- 1L
   per_sample <- list()
 
   for (sid in sample_ids) {
     sub <- cells[sample_id == sid]
     if (nrow(sub) < 10L) next
+    if (sum(sub$cell_type == type_a, na.rm = TRUE) < min_focal_cells) next
 
     if (!is.null(max_cells) && nrow(sub) > max_cells) {
       sub <- sub[sample(.N, max_cells)]
     }
 
     built <- build_ppp(sub, type_a = type_a, type_b = type_b,
-                       window_type = window_type)
+                       window_type = window_type,
+                       min_focal = min_focal_cells)
     if (is.null(built)) next
     ppp <- built$ppp
 
@@ -79,18 +86,23 @@ ripleys_k <- function(cells, sample_ids = NULL, type_a, type_b = NULL,
     )
   }
 
-  list(
-    type_a       = type_a,
-    type_b       = type_b,
-    correction   = correction,
-    window_type  = window_type,
-    nsim         = as.integer(nsim),
-    per_sample   = unname(per_sample),
-    summary      = aggregate_curves(
-      per_sample,
-      value_cols = c("K_obs", "K_theo", "L_obs", "L_theo",
-                     "envelope_lo", "envelope_hi")
-    )
+  spatial_result_meta(
+    list(
+      type_a       = type_a,
+      type_b       = type_b,
+      correction   = correction,
+      window_type  = window_type,
+      nsim         = as.integer(nsim),
+      min_focal_cells = min_focal_cells,
+      per_sample   = unname(per_sample),
+      summary      = aggregate_curves(
+        per_sample,
+        value_cols = c("K_obs", "K_theo", "L_obs", "L_theo",
+                       "envelope_lo", "envelope_hi")
+      )
+    ),
+    cells = cells,
+    sample_ids = sample_ids
   )
 }
 
@@ -102,22 +114,27 @@ ripleys_k <- function(cells, sample_ids = NULL, type_a, type_b = NULL,
 #'   for G under edge effects.
 nn_g <- function(cells, sample_ids = NULL, type_a, type_b = NULL,
                  r = NULL, correction = "km", max_cells = NULL,
-                 window_type = c("convex", "bbox"), nsim = 0L) {
+                 window_type = c("convex", "bbox"), nsim = 0L,
+                 min_focal_cells = 10L) {
   window_type <- match.arg(window_type)
   require_spatstat()
   stopifnot(data.table::is.data.table(cells))
   if (is.null(sample_ids)) sample_ids <- unique(cells$sample_id)
+  min_focal_cells <- as.integer(min_focal_cells %||% 10L)
+  if (min_focal_cells < 1L) min_focal_cells <- 1L
   per_sample <- list()
 
   for (sid in sample_ids) {
     sub <- cells[sample_id == sid]
     if (nrow(sub) < 10L) next
+    if (sum(sub$cell_type == type_a, na.rm = TRUE) < min_focal_cells) next
     if (!is.null(max_cells) && nrow(sub) > max_cells) {
       sub <- sub[sample(.N, max_cells)]
     }
 
     built <- build_ppp(sub, type_a = type_a, type_b = type_b,
-                       window_type = window_type)
+                       window_type = window_type,
+                       min_focal = min_focal_cells)
     if (is.null(built)) next
     ppp <- built$ppp
 
@@ -145,18 +162,34 @@ nn_g <- function(cells, sample_ids = NULL, type_a, type_b = NULL,
     )
   }
 
-  list(
-    type_a       = type_a,
-    type_b       = type_b,
-    correction   = correction,
-    window_type  = window_type,
-    nsim         = as.integer(nsim),
-    per_sample   = unname(per_sample),
-    summary      = aggregate_curves(
-      per_sample,
-      value_cols = c("G_obs", "G_theo", "envelope_lo", "envelope_hi")
-    )
+  spatial_result_meta(
+    list(
+      type_a       = type_a,
+      type_b       = type_b,
+      correction   = correction,
+      window_type  = window_type,
+      nsim         = as.integer(nsim),
+      min_focal_cells = min_focal_cells,
+      per_sample   = unname(per_sample),
+      summary      = aggregate_curves(
+        per_sample,
+        value_cols = c("G_obs", "G_theo", "envelope_lo", "envelope_hi")
+      )
+    ),
+    cells = cells,
+    sample_ids = sample_ids
   )
+}
+
+#' Attach sample inclusion counts to a spatial analysis result.
+spatial_result_meta <- function(result, cells, sample_ids) {
+  n_total <- length(unique(sample_ids))
+  n_analyzed <- length(result$per_sample)
+  c(result, list(
+    n_samples_total = n_total,
+    n_samples_analyzed = n_analyzed,
+    n_samples_excluded = max(0L, n_total - n_analyzed)
+  ))
 }
 
 # ---- Helpers ---------------------------------------------------------------
@@ -173,15 +206,18 @@ require_spatstat <- function() {
 #'
 #' Returns a list with `ppp` and `meta` (n_focal, n_total, tissue_area).
 build_ppp <- function(sub, type_a, type_b = NULL,
-                      window_type = c("convex", "bbox")) {
+                      window_type = c("convex", "bbox"),
+                      min_focal = 4L) {
   window_type <- match.arg(window_type)
+  min_focal <- as.integer(min_focal %||% 4L)
+  if (min_focal < 4L) min_focal <- 4L
   if (nrow(sub) == 0L) return(NULL)
   win <- build_tissue_window(sub$x, sub$y, window_type = window_type)
   if (is.null(win)) return(NULL)
 
   if (is.null(type_b)) {
     pts <- sub[cell_type == type_a]
-    if (nrow(pts) < 4L) return(NULL)
+    if (nrow(pts) < min_focal) return(NULL)
     ppp <- spatstat.geom::ppp(pts$x, pts$y, window = win, check = FALSE)
     list(
       ppp = ppp,
@@ -194,8 +230,8 @@ build_ppp <- function(sub, type_a, type_b = NULL,
   } else {
     pts <- sub[cell_type %in% c(type_a, type_b)]
     if (nrow(pts) < 4L) return(NULL)
-    if (sum(pts$cell_type == type_a) < 2L) return(NULL)
-    if (sum(pts$cell_type == type_b) < 2L) return(NULL)
+    if (sum(pts$cell_type == type_a) < min_focal) return(NULL)
+    if (sum(pts$cell_type == type_b) < min_focal) return(NULL)
 
     marks <- factor(pts$cell_type, levels = c(type_a, type_b))
     ppp <- spatstat.geom::ppp(pts$x, pts$y, window = win, marks = marks,

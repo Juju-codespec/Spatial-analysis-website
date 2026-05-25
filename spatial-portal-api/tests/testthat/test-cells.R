@@ -49,3 +49,17 @@ test_that("parse_survival_csv normalizes column names and coerces status", {
   expect_equal(surv$status, c(1L, 0L, 1L))
   expect_equal(surv$time, c(100, 200, 365))
 })
+
+test_that("parse_rds_upload reads a saved portal dataset list", {
+  cells <- make_synthetic_cells(n_per_sample = 50, n_samples = 2)
+  ds <- build_uploaded_dataset(id = "test-rds", title = "RDS test", cells = cells)
+  path <- tempfile(fileext = ".rds")
+  saveRDS(ds, path)
+  on.exit(unlink(path), add = TRUE)
+
+  out <- parse_rds_upload(path, id = "upload-abc", title = "New title")
+  expect_equal(out$meta$id, "upload-abc")
+  expect_equal(out$meta$title, "New title")
+  expect_equal(out$meta$source, "upload")
+  expect_equal(nrow(out$cells), nrow(cells))
+})

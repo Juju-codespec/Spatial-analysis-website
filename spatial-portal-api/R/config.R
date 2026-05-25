@@ -21,6 +21,10 @@ cfg <- function() {
       cells_response_cap   = as.integer(
         Sys.getenv("CELLS_RESPONSE_CAP", "50000")
       ),
+      default_nsim = as.integer(Sys.getenv("DEFAULT_NSIM", "49")),
+      async_cells_threshold = as.integer(
+        Sys.getenv("ASYNC_CELLS_THRESHOLD", "50000")
+      ),
       enable_vpd    = tolower(Sys.getenv("ENABLE_VPD", "true")) %in%
         c("1", "true", "yes"),
       version       = "0.1.0"

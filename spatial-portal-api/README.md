@@ -24,7 +24,7 @@ via Cox proportional hazards models.
 | GET    | `/datasets`                       | List bundled VPD demos + user uploads                       |
 | GET    | `/datasets/:id`                   | Metadata, sample list, cell-type counts, survival columns   |
 | GET    | `/datasets/:id/cells`             | Downsampled cells for plotting                              |
-| POST   | `/datasets`                       | Multipart upload (`cells.csv`, optional `survival.csv`)     |
+| POST   | `/datasets`                       | Multipart upload (`cells` CSV/TSV, or `rds`/`spe` SpatialExperiment) |
 | POST   | `/analyze/ripleys-k`              | Per-sample Ripley K (`Kest` / `Kcross`); optionally async   |
 | POST   | `/analyze/nn-g`                   | Per-sample Nearest-Neighbour G (`Gest` / `Gcross`)          |
 | POST   | `/analyze/cox`                    | Cox PH using a per-sample K/G summary at a chosen radius    |
@@ -61,11 +61,12 @@ RDS under `data-cache/`.
 
 `POST /datasets` accepts multipart form data:
 
-- `cells` (required): CSV/TSV with `x`, `y` columns and either
-  `phenotype_*` boolean columns (e.g. `phenotype_cd3`, `phenotype_cd8`)
-  in the Vectra Polaris layout, or a single `cell_type` column.
+- `cells` (CSV/TSV) **or** `rds` / `spe` (`.rds` containing a `SpatialExperiment` or portal dataset list)
+  - CSV: `x`, `y` columns and either `phenotype_*` boolean columns or a `cell_type` column
 - `survival` (optional): CSV/TSV with `sample_id`, `time`, `status`,
   plus any covariate columns to use in the Cox model.
+
+Spatial analysis endpoints accept `minFocalCells` (default 10) to exclude weak samples, and default to CSR permutation envelopes (`nsim=49`) with async jobs for large datasets.
 
 ## Quick start
 

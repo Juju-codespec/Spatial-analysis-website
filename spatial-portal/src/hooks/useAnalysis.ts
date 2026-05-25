@@ -1,10 +1,4 @@
 // React hooks for spatial/survival analyses backed by the R API.
-//
-// Each hook owns its own loading/error state and re-fires when its key
-// parameters change. State updates are dispatched only after at least one
-// `await` boundary so they never run synchronously inside the effect body
-// (the lint rule `react-hooks/set-state-in-effect` would otherwise flag
-// the loading-flag set).
 
 import { useEffect, useState } from 'react';
 import {
@@ -31,9 +25,27 @@ type AsyncState<T> = {
 
 const initial = <T>(): AsyncState<T> => ({ data: null, loading: false, error: null });
 
-// Generic helper that drives an async request hook. We deliberately do all
-// state writes from inside `then`/`catch` callbacks so they happen on a
-// later microtask, not synchronously in the effect body.
+async function pollJob<T>(jobId: string, intervalMs = 1500, maxAttempts = 120): Promise<T> {
+  for (let i = 0; i < maxAttempts; i++) {
+    const job = await getJob<T>(jobId);
+    if (job.status === 'completed') return job.result as T;
+    if (job.status === 'failed') throw new Error(job.error ?? 'Job failed');
+    await new Promise(resolve => window.setTimeout(resolve, intervalMs));
+  }
+  throw new Error('Analysis job timed out');
+}
+
+async function runSpatialJob<T>(
+  req: RipleyKRequest,
+  fetcher: (r: RipleyKRequest) => Promise<T | { jobId: string; status: string }>,
+): Promise<T> {
+  const res = await fetcher(req);
+  if (res && typeof res === 'object' && 'jobId' in res) {
+    return pollJob<T>(res.jobId);
+  }
+  return res as T;
+}
+
 function useAsync<TReq, TRes>(
   req: TReq | null,
   fetcher: (r: TReq) => Promise<TRes>,
@@ -65,16 +77,15 @@ function useAsync<TReq, TRes>(
   return state;
 }
 
-/** Run Ripley's K against the backend; null means "don't run". */
 export function useRipleyK(req: RipleyKRequest | null) {
   return useAsync<RipleyKRequest, RipleyKResponse>(req, r =>
-    analyzeRipleyK(r).then(unwrapSync<RipleyKResponse>),
+    runSpatialJob(r, analyzeRipleyK),
   );
 }
 
 export function useNnG(req: RipleyKRequest | null) {
   return useAsync<RipleyKRequest, NnGResponse>(req, r =>
-    analyzeNnG(r).then(unwrapSync<NnGResponse>),
+    runSpatialJob(r, analyzeNnG),
   );
 }
 
@@ -82,10 +93,6 @@ export function useCox(req: CoxRequest | null) {
   return useAsync<CoxRequest, CoxResponse>(req, analyzeCox);
 }
 
-/**
- * Poll the `/jobs/:id` endpoint until the job completes. Default poll
- * interval is 1.5s; cleans up on unmount or when the id changes.
- */
 export function useJobResult<T>(jobId: string | null, intervalMs = 1500): AsyncState<T> & { status: JobStatus<T>['status'] | null } {
   const [state, setState] = useState<AsyncState<T> & { status: JobStatus<T>['status'] | null }>(
     { ...initial<T>(), status: null },
@@ -127,13 +134,6 @@ export function useJobResult<T>(jobId: string | null, intervalMs = 1500): AsyncS
   }, [jobId, intervalMs]);
 
   return state;
-}
-
-function unwrapSync<T>(value: T | { jobId: string; status: string }): T {
-  if (value && typeof value === 'object' && 'jobId' in value) {
-    throw new Error('Backend returned a job id; use useJobResult to poll it.');
-  }
-  return value as T;
 }
 
 function errorMessage(e: unknown): string {

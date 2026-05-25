@@ -101,7 +101,9 @@ test_that("plumber service serves /health, /datasets, and analysis endpoints", {
   k_resp <- httr::POST(paste0(base, "/analyze/ripleys-k"),
                        body = list(datasetId = ds_id,
                                    typeA = "CD8+ T Cell",
-                                   rMax = 80),
+                                   rMax = 80,
+                                   nsim = 0L,
+                                   async = FALSE),
                        encode = "json")
   expect_equal(httr::status_code(k_resp), 200L)
   k_body <- parse_body(k_resp)

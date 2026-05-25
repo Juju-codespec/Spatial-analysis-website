@@ -265,6 +265,73 @@ parse_survival_csv <- function(path) {
   out
 }
 
+#' Parse a user-uploaded `.rds` file into a portal dataset list.
+#'
+#' Accepts:
+#'   - `SpatialExperiment` objects (Vectra / Bioconductor layout)
+#'   - Portal dataset lists saved via `saveRDS()` (must contain `$cells`)
+parse_rds_upload <- function(path, id, title = NULL,
+                             cancer_type = NA_character_,
+                             tissue = NA_character_) {
+  if (!file.exists(path)) {
+    stop(sprintf("RDS file not found: %s", path), call. = FALSE)
+  }
+  obj <- tryCatch(readRDS(path), error = function(e) {
+    stop(sprintf("Failed to read RDS: %s", e$message), call. = FALSE)
+  })
+
+  if (inherits(obj, "SpatialExperiment")) {
+    ds <- spe_to_dataset(
+      obj,
+      id = id,
+      title = title %||% "RDS upload",
+      cancer_type = cancer_type %||% NA_character_,
+      tissue = tissue %||% NA_character_
+    )
+    ds$meta$source <- "upload"
+    return(ds)
+  }
+
+  if (is.list(obj) && !is.null(obj$cells)) {
+    cells <- obj$cells
+    if (!data.table::is.data.table(cells)) {
+      cells <- data.table::as.data.table(cells)
+    }
+    if (nrow(cells) == 0L) {
+      stop("RDS dataset contains no cells.", call. = FALSE)
+    }
+    meta <- obj$meta %||% list()
+    meta$id <- id
+    meta$title <- title %||% meta$title %||% "RDS upload"
+    meta$source <- "upload"
+    meta$cancer_type <- cancer_type %||% meta$cancer_type %||% NA_character_
+    meta$tissue <- tissue %||% meta$tissue %||% NA_character_
+    meta$n_cells <- nrow(cells)
+    meta$sample_count <- length(unique(cells$sample_id))
+    meta$cell_types <- sort(unique(as.character(cells$cell_type)))
+    meta$created_at <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+
+    samples <- obj$samples
+    if (is.null(samples) || nrow(samples) == 0L) {
+      samples <- build_sample_summary(cells)
+    }
+    survival <- obj$survival
+    if (is.null(survival)) survival <- data.frame()
+
+    return(list(
+      meta = meta,
+      samples = samples,
+      cells = cells,
+      survival = survival
+    ))
+  }
+
+  stop(
+    "RDS must contain a SpatialExperiment or a portal dataset with a cells table.",
+    call. = FALSE
+  )
+}
+
 #' Assemble a dataset list from a freshly uploaded cells (and optional
 #' survival) data frame.
 build_uploaded_dataset <- function(id, title, cells, survival = NULL,

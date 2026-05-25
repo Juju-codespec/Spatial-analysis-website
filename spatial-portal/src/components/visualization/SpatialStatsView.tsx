@@ -16,6 +16,7 @@ interface Props {
 const DEFAULT_T_CELL_OPTIONS = ['CD8+ T Cell', 'CD4+ T Cell', 'T Cell'];
 const DEFAULT_R_MAX = 100;
 const DEFAULT_NSIM = 49;
+const DEFAULT_MIN_FOCAL = 10;
 
 export default function SpatialStatsView({ datasetId, availableCellTypes }: Props) {
   const tCellOptions = availableCellTypes.length > 0 ? availableCellTypes : DEFAULT_T_CELL_OPTIONS;
@@ -23,8 +24,9 @@ export default function SpatialStatsView({ datasetId, availableCellTypes }: Prop
   const [typeA, setTypeA] = useState<string>(
     availableCellTypes.find(ct => DEFAULT_T_CELL_OPTIONS.includes(ct)) ?? tCellOptions[0],
   );
-  const [typeB, setTypeB] = useState<string>(''); // empty => univariate
+  const [typeB, setTypeB] = useState<string>('');
   const [rMax, setRMax] = useState<number>(DEFAULT_R_MAX);
+  const [minFocalCells, setMinFocalCells] = useState<number>(DEFAULT_MIN_FOCAL);
   const [showEnvelopes, setShowEnvelopes] = useState(true);
 
   const baseReq = useMemo(() => ({
@@ -34,12 +36,14 @@ export default function SpatialStatsView({ datasetId, availableCellTypes }: Prop
     rMax,
     windowType: 'convex' as const,
     nsim: showEnvelopes ? DEFAULT_NSIM : 0,
-  }), [datasetId, typeA, typeB, rMax, showEnvelopes]);
+    minFocalCells,
+  }), [datasetId, typeA, typeB, rMax, showEnvelopes, minFocalCells]);
 
   const k = useRipleyK(baseReq);
   const g = useNnG(baseReq);
 
-  const sampleCount = k.data?.per_sample.length ?? g.data?.per_sample.length ?? 0;
+  const sampleCount = k.data?.n_samples_analyzed ?? k.data?.per_sample.length ?? g.data?.n_samples_analyzed ?? g.data?.per_sample.length ?? 0;
+  const samplesExcluded = k.data?.n_samples_excluded ?? g.data?.n_samples_excluded ?? 0;
   const windowType = k.data?.window_type ?? g.data?.window_type ?? 'convex';
 
   return (
@@ -58,7 +62,7 @@ export default function SpatialStatsView({ datasetId, availableCellTypes }: Prop
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-3 text-xs">
         <label className="block">
           <span className="text-slate-400 mb-1 block">Cell Type A</span>
           <select className="input text-xs" value={typeA} onChange={e => setTypeA(e.target.value)}>
@@ -78,6 +82,15 @@ export default function SpatialStatsView({ datasetId, availableCellTypes }: Prop
           </select>
         </label>
         <label className="block">
+          <span className="text-slate-400 mb-1 block">Min positive cells / sample</span>
+          <input
+            type="number" min={1} max={500} step={1}
+            value={minFocalCells}
+            onChange={e => setMinFocalCells(Math.max(1, Number(e.target.value) || DEFAULT_MIN_FOCAL))}
+            className="input text-xs"
+          />
+        </label>
+        <label className="block">
           <span className="text-slate-400 mb-1 block">Max radius (px)</span>
           <input
             type="number" min={10} max={500} step={5}
@@ -93,11 +106,18 @@ export default function SpatialStatsView({ datasetId, availableCellTypes }: Prop
             value={showEnvelopes ? 'yes' : 'no'}
             onChange={e => setShowEnvelopes(e.target.value === 'yes')}
           >
-            <option value="yes">On ({DEFAULT_NSIM} simulations)</option>
+            <option value="yes">On ({DEFAULT_NSIM} permutations)</option>
             <option value="no">Off (faster)</option>
           </select>
         </label>
       </div>
+
+      {samplesExcluded > 0 && (
+        <p className="text-[11px] text-amber-300 bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-2">
+          {samplesExcluded} sample{samplesExcluded === 1 ? '' : 's'} excluded (fewer than {minFocalCells} {typeA} cells).
+          Analyzing {sampleCount} sample{sampleCount === 1 ? '' : 's'}.
+        </p>
+      )}
 
       <MethodsBlurb
         typeA={typeA}
@@ -141,7 +161,7 @@ function MethodsBlurb({
         window = {windowType === 'convex' ? 'tissue convex hull' : 'bounding box'};
         K correction = {kCorrection}, G correction = {gCorrection};
         {sampleCount > 0 ? ` n = ${sampleCount} samples.` : ''}
-        {envelopes ? ` CSR envelopes: ${DEFAULT_NSIM} Monte Carlo sims per sample.` : ' CSR envelopes off.'}
+        {envelopes ? ` CSR permutation envelopes: ${DEFAULT_NSIM} sims (observed vs null).` : ' CSR envelopes off.'}
       </p>
       <p>
         Cox defaults elsewhere: K radius = 50 px, G radius = 20 px (user-adjustable).
@@ -208,6 +228,7 @@ function KPlot({ title, data, loading, error, mode }: KPlotProps) {
 
   // Envelope band from first sample with envelopes.
   const envSample = samples.find(s => s.envelope_lo && s.envelope_hi);
+  const envelopeP = envSample?.envelope_p;
   if (envSample?.envelope_lo && envSample.envelope_hi) {
     const envLo = mode === 'L'
       ? envSample.envelope_lo.map((kLo, i) =>
@@ -261,7 +282,11 @@ function KPlot({ title, data, loading, error, mode }: KPlotProps) {
     showlegend: false,
     annotations: [{
       x: 1, y: 1, xref: 'paper', yref: 'paper',
-      text: `${isCross ? 'cross' : 'univariate'} · ${samples.length} samples · ${data.correction}${hasEnvelopes ? ' · envelopes' : ''}`,
+      text: [
+        `${isCross ? 'cross' : 'univariate'} · ${samples.length} samples · ${data.correction}`,
+        hasEnvelopes ? 'CSR envelopes' : null,
+        envelopeP != null && isFinite(envelopeP) ? `perm p=${envelopeP < 0.001 ? '<0.001' : envelopeP.toFixed(3)}` : null,
+      ].filter(Boolean).join(' · '),
       showarrow: false, font: { size: 9, color: '#64748b' },
       xanchor: 'right', yanchor: 'top',
     }],
@@ -290,6 +315,7 @@ function GPlot({ data, loading, error }: { data: NnGResponse | null; loading: bo
   }));
 
   const envSample = samples.find(s => s.envelope_lo && s.envelope_hi);
+  const envelopeP = envSample?.envelope_p;
   if (envSample?.envelope_lo && envSample.envelope_hi) {
     traces.push({
       type: 'scatter',
@@ -329,12 +355,16 @@ function GPlot({ data, loading, error }: { data: NnGResponse | null; loading: bo
     xaxis: { title: { text: 'r (pixels)' }, gridcolor: '#1e293b' },
     yaxis: { title: { text: 'G(r)' }, gridcolor: '#1e293b', range: [0, 1.05] },
     showlegend: false,
-    annotations: hasEnvelopes ? [{
+    annotations: [{
       x: 1, y: 1, xref: 'paper', yref: 'paper',
-      text: `${samples.length} samples · ${data.correction} · envelopes`,
+      text: [
+        `${samples.length} samples · ${data.correction}`,
+        hasEnvelopes ? 'CSR envelopes' : null,
+        envelopeP != null && isFinite(envelopeP) ? `perm p=${envelopeP < 0.001 ? '<0.001' : envelopeP.toFixed(3)}` : null,
+      ].filter(Boolean).join(' · '),
       showarrow: false, font: { size: 9, color: '#64748b' },
       xanchor: 'right', yanchor: 'top',
-    }] : undefined,
+    }],
   };
 
   return <Plot data={traces} layout={layout} style={{ width: '100%' }} config={{ displayModeBar: false }} />;

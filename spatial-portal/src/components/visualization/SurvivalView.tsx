@@ -33,6 +33,7 @@ export default function SurvivalView({
   const [dichotomize, setDichotomize] = useState<'median' | 'tertile' | 'none'>('none');
   const [adjustDensity, setAdjustDensity] = useState(true);
   const [clusterPatients, setClusterPatients] = useState(true);
+  const [minFocalCells, setMinFocalCells] = useState(10);
 
   const req = useMemo(() => hasSurvival ? {
     datasetId,
@@ -42,8 +43,9 @@ export default function SurvivalView({
     dichotomize,
     adjustDensity,
     clusterPatients,
+    minFocalCells,
     windowType: 'convex' as const,
-  } : null, [datasetId, statistic, radius, typeA, dichotomize, adjustDensity, clusterPatients, hasSurvival]);
+  } : null, [datasetId, statistic, radius, typeA, dichotomize, adjustDensity, clusterPatients, minFocalCells, hasSurvival]);
 
   const { data, loading, error } = useCox(req);
 
@@ -75,7 +77,7 @@ export default function SurvivalView({
         </p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3 text-xs">
         <label>
           <span className="text-slate-400 mb-1 block">Statistic</span>
           <select
@@ -112,6 +114,15 @@ export default function SurvivalView({
             <option value="median">Median split + KM</option>
             <option value="tertile">Top vs bottom tertile + KM</option>
           </select>
+        </label>
+        <label>
+          <span className="text-slate-400 mb-1 block">Min positive cells / sample</span>
+          <input
+            type="number" min={1} max={500} step={1}
+            value={minFocalCells}
+            onChange={e => setMinFocalCells(Math.max(1, Number(e.target.value) || 10))}
+            className="input text-xs"
+          />
         </label>
         <label>
           <span className="text-slate-400 mb-1 block">Density adjustment</span>
@@ -151,6 +162,13 @@ export default function SurvivalView({
 
       {data && (
         <>
+          {data.sample_filter && data.sample_filter.n_samples_excluded > 0 && (
+            <p className="text-[11px] text-amber-300 bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-2">
+              {data.sample_filter.n_samples_excluded} sample{data.sample_filter.n_samples_excluded === 1 ? '' : 's'} excluded
+              (fewer than {data.sample_filter.min_focal_cells} {typeA} cells).
+              Cox model uses {data.sample_filter.n_samples_analyzed} sample{data.sample_filter.n_samples_analyzed === 1 ? '' : 's'}.
+            </p>
+          )}
           <CoxSummaryTable data={data.cox} />
           {data.cox.formula && (
             <p className="text-[10px] text-slate-500 font-mono break-all">
