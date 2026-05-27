@@ -166,30 +166,17 @@ coerce_status <- function(x) {
          1L, 0L)
 }
 
-# ---- CSV upload parser -----------------------------------------------------
+# ---- CSV / table upload parser ---------------------------------------------
 
-#' Parse a Vectra-style cell CSV/TSV uploaded by the user.
+#' Parse a cell-level table (data.frame) into the portal cells schema.
 #'
 #' Required columns: x and y (numeric). Phenotype assignment uses any
 #' `phenotype_*` columns present, falling back to a `cell_type` column if
-#' provided. A `sample_id` column is optional; missing values default to
-#' "sample_1".
-parse_cells_csv <- function(path) {
-  if (!file.exists(path)) {
-    stop(sprintf("File not found: %s", path), call. = FALSE)
-  }
-  sep <- if (grepl("\\.tsv$", path, ignore.case = TRUE)) "\t" else ","
-
-  df <- tryCatch(
-    vroom::vroom(path, delim = sep, show_col_types = FALSE,
-                 .name_repair = "minimal"),
-    error = function(e) stop(sprintf("Failed to read CSV: %s", e$message),
-                             call. = FALSE)
-  )
-  if (nrow(df) == 0L) stop("CSV contains no rows", call. = FALSE)
-
-  cols <- tolower(names(df))
-  names(df) <- cols
+#' provided. Uses `sample_id` when present; otherwise `patient_id` / `slide_id`.
+parse_cells_table <- function(df) {
+  if (nrow(df) == 0L) stop("Table contains no rows", call. = FALSE)
+  df <- as.data.frame(df)
+  names(df) <- tolower(names(df))
 
   x_col <- pick_col_name(df, c("x", "cell_x_position", "cell.x.position",
                                "x_centroid", "cell_x"))
@@ -201,6 +188,9 @@ parse_cells_csv <- function(path) {
 
   sample_col <- pick_col_name(df, c("sample_id", "slide_id", "image_id"))
   patient_col <- pick_col_name(df, c("patient_id", "subject_id"))
+  if (is.null(sample_col) && !is.null(patient_col)) {
+    sample_col <- patient_col
+  }
 
   phen_cols <- grep("^phenotype_", names(df), value = TRUE)
   if (length(phen_cols) > 0L) {
@@ -233,25 +223,42 @@ parse_cells_csv <- function(path) {
   cells
 }
 
-#' Parse a survival metadata CSV. Required columns: time, status; plus
-#' sample_id or patient_id to link to cells.
-parse_survival_csv <- function(path) {
+#' Parse a Vectra-style cell CSV/TSV uploaded by the user.
+parse_cells_csv <- function(path) {
   if (!file.exists(path)) {
     stop(sprintf("File not found: %s", path), call. = FALSE)
   }
   sep <- if (grepl("\\.tsv$", path, ignore.case = TRUE)) "\t" else ","
-  df <- vroom::vroom(path, delim = sep, show_col_types = FALSE,
-                     .name_repair = "minimal")
+
+  df <- tryCatch(
+    vroom::vroom(path, delim = sep, show_col_types = FALSE,
+                 .name_repair = "minimal"),
+    error = function(e) stop(sprintf("Failed to read CSV: %s", e$message),
+                             call. = FALSE)
+  )
+  if (nrow(df) == 0L) stop("CSV contains no rows", call. = FALSE)
+  parse_cells_table(df)
+}
+
+#' Normalize a survival table to `sample_id`, `time`, `status` (+ covariates).
+#'
+#' Returns `NULL` when required columns are missing and `stop_on_missing`
+#' is FALSE.
+parse_survival_table <- function(df, stop_on_missing = TRUE) {
+  df <- as.data.frame(df)
   names(df) <- tolower(names(df))
 
   id_col <- pick_col_name(df, c("sample_id", "patient_id", "subject_id"))
   time_col <- pick_col_name(df, c("time", "survival_days", "survival_time",
-                                  "os_time"))
+                                  "os_time", "futime"))
   status_col <- pick_col_name(df, c("status", "event", "death",
-                                    "survival_status", "os_status"))
+                                    "survival_status", "os_status", "fustat"))
   if (is.null(id_col) || is.null(time_col) || is.null(status_col)) {
-    stop("Survival CSV must include id (sample_id/patient_id), time, status.",
-         call. = FALSE)
+    if (stop_on_missing) {
+      stop("Survival table must include id (sample_id/patient_id), time, status.",
+           call. = FALSE)
+    }
+    return(NULL)
   }
 
   out <- data.frame(
@@ -265,11 +272,31 @@ parse_survival_csv <- function(path) {
   out
 }
 
+#' Extract one survival row per sample/patient from a cell-level table.
+extract_survival_from_table <- function(df) {
+  surv <- parse_survival_table(df, stop_on_missing = FALSE)
+  if (is.null(surv)) return(NULL)
+  surv[!duplicated(surv$sample_id), , drop = FALSE]
+}
+
+#' Parse a survival metadata CSV. Required columns: time, status; plus
+#' sample_id or patient_id to link to cells.
+parse_survival_csv <- function(path) {
+  if (!file.exists(path)) {
+    stop(sprintf("File not found: %s", path), call. = FALSE)
+  }
+  sep <- if (grepl("\\.tsv$", path, ignore.case = TRUE)) "\t" else ","
+  df <- vroom::vroom(path, delim = sep, show_col_types = FALSE,
+                     .name_repair = "minimal")
+  parse_survival_table(df, stop_on_missing = TRUE)
+}
+
 #' Parse a user-uploaded `.rds` file into a portal dataset list.
 #'
 #' Accepts:
 #'   - `SpatialExperiment` objects (Vectra / Bioconductor layout)
 #'   - Portal dataset lists saved via `saveRDS()` (must contain `$cells`)
+#'   - Plain cell-level `data.frame`s with x/y and cell_type or phenotype_* cols
 parse_rds_upload <- function(path, id, title = NULL,
                              cancer_type = NA_character_,
                              tissue = NA_character_) {
@@ -326,8 +353,34 @@ parse_rds_upload <- function(path, id, title = NULL,
     ))
   }
 
+  if (is.data.frame(obj) || data.table::is.data.table(obj)) {
+    cells <- tryCatch(parse_cells_table(obj), error = function(e) e)
+    if (inherits(cells, "error")) {
+      stop(
+        paste0(
+          conditionMessage(cells),
+          " Plain RDS uploads need a cell-level data.frame with x/y coordinates ",
+          "and cell_type (or phenotype_*) columns."
+        ),
+        call. = FALSE
+      )
+    }
+    survival <- extract_survival_from_table(obj)
+    return(build_uploaded_dataset(
+      id = id,
+      title = title %||% "RDS upload",
+      cells = cells,
+      survival = survival,
+      cancer_type = cancer_type %||% NA_character_,
+      tissue = tissue %||% NA_character_
+    ))
+  }
+
   stop(
-    "RDS must contain a SpatialExperiment or a portal dataset with a cells table.",
+    paste0(
+      "RDS must contain a SpatialExperiment, a portal dataset with a cells ",
+      "table, or a cell-level data.frame with x/y coordinates."
+    ),
     call. = FALSE
   )
 }

@@ -11,6 +11,59 @@
 # simulation envelopes add inferential context. Results are aggregated into
 # a tidy list ready for JSON serialization or downstream survival modelling.
 
+#' Return sample ids eligible for spatial analysis.
+#'
+#' Skips degenerate ids (too few total cells) and caps how many samples are
+#' processed so pathological uploads (e.g. one cell per sample_id) cannot hang
+#' the API.
+resolve_analysis_sample_ids <- function(cells, sample_ids = NULL,
+                                        min_total_cells = NULL,
+                                        max_samples = NULL) {
+  stopifnot(data.table::is.data.table(cells))
+  min_total_cells <- as.integer(min_total_cells %||% cfg()$min_cells_per_sample)
+  max_samples <- as.integer(max_samples %||% cfg()$max_samples_analysis)
+  if (min_total_cells < 1L) min_total_cells <- 1L
+  if (max_samples < 1L) max_samples <- 1L
+
+  if (is.null(sample_ids)) sample_ids <- unique(cells$sample_id)
+  counts <- cells[, .N, by = sample_id]
+  eligible <- counts[N >= min_total_cells, sample_id]
+  eligible <- intersect(as.character(eligible), as.character(sample_ids))
+  if (length(eligible) > max_samples) {
+    eligible <- sample(eligible, max_samples)
+  }
+  eligible
+}
+
+#' Human-readable hint when no samples survive filtering.
+spatial_no_samples_message <- function(cells, type_a, min_focal_cells,
+                                       min_total_cells) {
+  tab <- cells[, .N, by = sample_id]
+  med <- stats::median(tab$N)
+  max_n <- max(tab$N)
+  type_n <- sum(cells$cell_type == type_a, na.rm = TRUE)
+  parts <- character()
+  if (max_n < min_total_cells) {
+    parts <- c(parts, sprintf(
+      "Every sample_id has fewer than %d cells (max %d, median %.0f). Spatial stats need tissue cores/ROIs with many cells sharing the same sample_id — not one row per cell.",
+      min_total_cells, max_n, med
+    ))
+  }
+  if (type_n < min_focal_cells) {
+    parts <- c(parts, sprintf(
+      "Only %d '%s' cells in the dataset (need >= %d per sample). Pick a cell type that exists in your data.",
+      type_n, type_a, min_focal_cells
+    ))
+  }
+  if (length(parts) == 0L) {
+    parts <- sprintf(
+      "No samples had >= %d '%s' cells after filtering.",
+      min_focal_cells, type_a
+    )
+  }
+  paste(parts, collapse = " ")
+}
+
 # ---- Ripley's K ------------------------------------------------------------
 
 #' Compute Ripley's K for one or two cell types across selected samples.
@@ -40,10 +93,23 @@ ripleys_k <- function(cells, sample_ids = NULL, type_a, type_b = NULL,
   window_type <- match.arg(window_type)
   require_spatstat()
   stopifnot(data.table::is.data.table(cells))
-  if (is.null(sample_ids)) sample_ids <- unique(cells$sample_id)
   min_focal_cells <- as.integer(min_focal_cells %||% 10L)
   if (min_focal_cells < 1L) min_focal_cells <- 1L
+  min_total_cells <- max(min_focal_cells, cfg()$min_cells_per_sample)
+  if (is.null(sample_ids)) sample_ids <- unique(cells$sample_id)
+  all_sample_ids <- sample_ids
+  sample_ids <- resolve_analysis_sample_ids(
+    cells,
+    sample_ids = sample_ids,
+    min_total_cells = min_total_cells
+  )
   per_sample <- list()
+  analysis_message <- NULL
+  if (length(sample_ids) == 0L) {
+    analysis_message <- spatial_no_samples_message(
+      cells, type_a, min_focal_cells, min_total_cells
+    )
+  }
 
   for (sid in sample_ids) {
     sub <- cells[sample_id == sid]
@@ -99,10 +165,11 @@ ripleys_k <- function(cells, sample_ids = NULL, type_a, type_b = NULL,
         per_sample,
         value_cols = c("K_obs", "K_theo", "L_obs", "L_theo",
                        "envelope_lo", "envelope_hi")
-      )
+      ),
+      analysis_message = analysis_message
     ),
     cells = cells,
-    sample_ids = sample_ids
+    sample_ids = all_sample_ids
   )
 }
 
@@ -119,10 +186,23 @@ nn_g <- function(cells, sample_ids = NULL, type_a, type_b = NULL,
   window_type <- match.arg(window_type)
   require_spatstat()
   stopifnot(data.table::is.data.table(cells))
-  if (is.null(sample_ids)) sample_ids <- unique(cells$sample_id)
   min_focal_cells <- as.integer(min_focal_cells %||% 10L)
   if (min_focal_cells < 1L) min_focal_cells <- 1L
+  min_total_cells <- max(min_focal_cells, cfg()$min_cells_per_sample)
+  if (is.null(sample_ids)) sample_ids <- unique(cells$sample_id)
+  all_sample_ids <- sample_ids
+  sample_ids <- resolve_analysis_sample_ids(
+    cells,
+    sample_ids = sample_ids,
+    min_total_cells = min_total_cells
+  )
   per_sample <- list()
+  analysis_message <- NULL
+  if (length(sample_ids) == 0L) {
+    analysis_message <- spatial_no_samples_message(
+      cells, type_a, min_focal_cells, min_total_cells
+    )
+  }
 
   for (sid in sample_ids) {
     sub <- cells[sample_id == sid]
@@ -174,10 +254,11 @@ nn_g <- function(cells, sample_ids = NULL, type_a, type_b = NULL,
       summary      = aggregate_curves(
         per_sample,
         value_cols = c("G_obs", "G_theo", "envelope_lo", "envelope_hi")
-      )
+      ),
+      analysis_message = analysis_message
     ),
     cells = cells,
-    sample_ids = sample_ids
+    sample_ids = all_sample_ids
   )
 }
 

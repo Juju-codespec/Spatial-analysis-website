@@ -1,10 +1,10 @@
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useState, useEffect, useCallback } from 'react';
 import {
   ArrowLeft, Download, Share2, BookOpen, GitCompare,
   MessageSquare, ChevronRight, Users, Calendar,
   MapPin, ExternalLink, Send, Layers, BarChart2, Info,
-  Activity, HeartPulse
+  Activity, HeartPulse, Trash2
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { MOCK_COMMENTS } from '../data/mockData';
@@ -13,7 +13,9 @@ import HeatmapView from '../components/visualization/HeatmapView';
 import LayerControls from '../components/visualization/LayerControls';
 import SpatialStatsView from '../components/visualization/SpatialStatsView';
 import SurvivalView from '../components/visualization/SurvivalView';
+import DeleteDatasetDialog from '../components/dataset/DeleteDatasetDialog';
 import { getDataset } from '../api/client';
+import { canUserDeleteDataset } from '../utils/datasetOwnership';
 import type { ApiDatasetDetail } from '../api/types';
 import clsx from 'clsx';
 
@@ -22,9 +24,11 @@ type SideTab = 'layers' | 'metadata' | 'comments';
 
 export default function DatasetDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { datasets, toggleCompare, compareIds, currentUser, hydrateDatasetCells } = useStore();
   const dataset = datasets.find(d => d.id === id);
   const [apiDetail, setApiDetail] = useState<ApiDatasetDetail | null>(null);
+  const [pendingDelete, setPendingDelete] = useState(false);
 
   const refreshDetail = useCallback(() => {
     if (!id) return;
@@ -60,6 +64,7 @@ export default function DatasetDetail() {
   }
 
   const isInCompare = compareIds.includes(dataset.id);
+  const deletable = canUserDeleteDataset(dataset, currentUser);
 
   const handleComment = () => {
     if (!comment.trim() || !currentUser) return;
@@ -193,6 +198,22 @@ export default function DatasetDetail() {
               <h3 className="text-sm font-semibold text-slate-200 mb-2">About this Dataset</h3>
               <p className="text-sm text-slate-400 leading-relaxed">{dataset.description}</p>
             </div>
+
+            {deletable && (
+              <div className="card p-5 mt-4 border-rose-900/40 bg-rose-950/10">
+                <h3 className="text-sm font-semibold text-slate-200 mb-1">Manage your upload</h3>
+                <p className="text-xs text-slate-500 mb-4">
+                  Remove this dataset from Explore and delete it from the server cache.
+                  Bundled demo datasets cannot be deleted.
+                </p>
+                <button
+                  onClick={() => setPendingDelete(true)}
+                  className="text-xs px-4 py-2 rounded-lg border border-rose-800/60 bg-rose-950/40 text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 transition-colors flex items-center gap-1.5"
+                >
+                  <Trash2 size={13} /> Delete dataset
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Right sidebar */}
@@ -286,6 +307,12 @@ export default function DatasetDetail() {
           </aside>
         </div>
       </div>
+
+      <DeleteDatasetDialog
+        dataset={pendingDelete ? dataset : null}
+        onClose={() => setPendingDelete(false)}
+        onDeleted={() => navigate('/explore')}
+      />
     </div>
   );
 }

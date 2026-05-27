@@ -114,9 +114,10 @@ export default function UploadPage() {
   const handleFileDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
-    const droppedFiles = Array.from(e.dataTransfer.files).filter(f =>
-      ACCEPTED_TYPES.some(ext => f.name.endsWith(ext))
-    );
+  const droppedFiles = Array.from(e.dataTransfer.files).filter(f => {
+    const n = f.name.toLowerCase();
+    return ACCEPTED_TYPES.some(ext => n.endsWith(ext));
+  });
     setFiles(prev => [...prev, ...droppedFiles]);
   };
 
@@ -440,9 +441,11 @@ export default function UploadPage() {
               <h2 className="text-base font-semibold text-slate-200 mb-1">Map Your Columns</h2>
               {files.some(f => f.name.toLowerCase().endsWith('.rds')) ? (
                 <div className="p-4 border border-brand-700/50 bg-brand-950/30 rounded-lg text-xs text-brand-300">
-                  <p className="font-semibold mb-1">RDS / SpatialExperiment detected</p>
+                  <p className="font-semibold mb-1">RDS detected</p>
                   <p className="text-brand-400/80">
-                    Coordinates and phenotype columns are extracted automatically on the server.
+                    Coordinates and cell types are extracted automatically on the server from
+                    SpatialExperiment objects, portal dataset lists, or plain cell tables
+                    (<code className="text-brand-300">x</code>, <code className="text-brand-300">y</code>, <code className="text-brand-300">cell_type</code>).
                     Continue to metadata — no column mapping needed.
                   </p>
                 </div>

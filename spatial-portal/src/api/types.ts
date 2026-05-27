@@ -83,6 +83,7 @@ export interface SpatialAnalysisResponse<TPerSample> {
   n_samples_total?: number;
   n_samples_analyzed?: number;
   n_samples_excluded?: number;
+  analysis_message?: string | null;
   per_sample: TPerSample[];
   summary: {
     r: number[];

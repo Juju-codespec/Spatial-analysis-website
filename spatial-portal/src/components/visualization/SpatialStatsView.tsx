@@ -1,7 +1,7 @@
 // Spatial statistics tab: plots Ripley's K (and L(r)-r) and Nearest-Neighbour
 // G for the active dataset, computed server-side by spatstat.
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import Plot from '../../lib/plot';
 import type { Data, Layout } from 'plotly.js';
 import { useRipleyK, useNnG } from '../../hooks/useAnalysis';
@@ -13,21 +13,32 @@ interface Props {
   availableCellTypes: string[];
 }
 
-const DEFAULT_T_CELL_OPTIONS = ['CD8+ T Cell', 'CD4+ T Cell', 'T Cell'];
+const DEFAULT_T_CELL_OPTIONS = ['CD8+ T Cell', 'CD4+ T Cell', 'T Cell', 'CD8_T'];
 const DEFAULT_R_MAX = 100;
 const DEFAULT_NSIM = 49;
 const DEFAULT_MIN_FOCAL = 10;
 
+function pickDefaultCellType(available: string[]): string {
+  if (available.length === 0) return DEFAULT_T_CELL_OPTIONS[0];
+  const preferred = available.find(ct => DEFAULT_T_CELL_OPTIONS.includes(ct));
+  return preferred ?? available[0];
+}
+
 export default function SpatialStatsView({ datasetId, availableCellTypes }: Props) {
   const tCellOptions = availableCellTypes.length > 0 ? availableCellTypes : DEFAULT_T_CELL_OPTIONS;
 
-  const [typeA, setTypeA] = useState<string>(
-    availableCellTypes.find(ct => DEFAULT_T_CELL_OPTIONS.includes(ct)) ?? tCellOptions[0],
-  );
+  const [typeA, setTypeA] = useState<string>(() => pickDefaultCellType(tCellOptions));
   const [typeB, setTypeB] = useState<string>('');
   const [rMax, setRMax] = useState<number>(DEFAULT_R_MAX);
   const [minFocalCells, setMinFocalCells] = useState<number>(DEFAULT_MIN_FOCAL);
   const [showEnvelopes, setShowEnvelopes] = useState(true);
+
+  useEffect(() => {
+    if (availableCellTypes.length === 0) return;
+    setTypeA(prev =>
+      availableCellTypes.includes(prev) ? prev : pickDefaultCellType(availableCellTypes),
+    );
+  }, [availableCellTypes]);
 
   const baseReq = useMemo(() => ({
     datasetId,
@@ -182,7 +193,7 @@ function KPlot({ title, data, loading, error, mode }: KPlotProps) {
   if (loading) return <PlotPlaceholder title={title} status="loading" />;
   if (error)   return <PlotPlaceholder title={title} status="error" message={error} />;
   if (!data || data.per_sample.length === 0)
-    return <PlotPlaceholder title={title} status="empty" message="No samples available" />;
+    return <PlotPlaceholder title={title} status="empty" message={data?.analysis_message ?? 'No samples available'} />;
 
   const samples = data.per_sample.slice(0, 25); // cap rendered traces
   const isCross = !!data.type_b;
@@ -299,7 +310,7 @@ function GPlot({ data, loading, error }: { data: NnGResponse | null; loading: bo
   if (loading) return <PlotPlaceholder title="Nearest-Neighbour G(r)" status="loading" />;
   if (error)   return <PlotPlaceholder title="Nearest-Neighbour G(r)" status="error" message={error} />;
   if (!data || data.per_sample.length === 0)
-    return <PlotPlaceholder title="Nearest-Neighbour G(r)" status="empty" message="No samples available" />;
+    return <PlotPlaceholder title="Nearest-Neighbour G(r)" status="empty" message={data?.analysis_message ?? 'No samples available'} />;
 
   const samples = data.per_sample.slice(0, 25);
   const hasEnvelopes = samples.some(s => s.envelope_lo && s.envelope_hi);
@@ -387,7 +398,7 @@ function PlotPlaceholder({ title, status, message }: {
         </p>
       )}
       {status === 'empty' && (
-        <p className="text-slate-600">{message ?? 'no data'}</p>
+        <p className="text-slate-500 text-center max-w-md leading-relaxed">{message ?? 'no data'}</p>
       )}
     </div>
   );

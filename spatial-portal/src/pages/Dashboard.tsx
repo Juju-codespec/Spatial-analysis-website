@@ -1,30 +1,15 @@
 import { Link } from 'react-router-dom';
 import { useState } from 'react';
-import { Database, Eye, Download, Plus, Edit, Trash2, Lock, Loader2, AlertCircle } from 'lucide-react';
+import { Database, Eye, Download, Plus, Edit, Trash2, Lock } from 'lucide-react';
 import { useStore } from '../store/useStore';
+import DeleteDatasetDialog from '../components/dataset/DeleteDatasetDialog';
 import clsx from 'clsx';
 
 export default function Dashboard() {
-  const { currentUser, datasets, removeDataset } = useStore();
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const { currentUser, datasets } = useStore();
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-  const confirmTarget = datasets.find(d => d.id === pendingDelete) ?? null;
-
-  const handleConfirmDelete = async () => {
-    if (!pendingDelete) return;
-    setDeleting(true);
-    setDeleteError(null);
-    try {
-      await removeDataset(pendingDelete);
-      setPendingDelete(null);
-    } catch (e) {
-      setDeleteError((e as Error).message || 'Failed to delete dataset.');
-    } finally {
-      setDeleting(false);
-    }
-  };
+  const confirmTarget = datasets.find(d => d.id === pendingDeleteId) ?? null;
 
   if (!currentUser) {
     return (
@@ -121,7 +106,7 @@ export default function Dashboard() {
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button className="btn-ghost text-xs p-1.5" title="Edit (coming soon)"><Edit size={13} /></button>
                     <button
-                      onClick={() => { setDeleteError(null); setPendingDelete(ds.id); }}
+                      onClick={() => setPendingDeleteId(ds.id)}
                       className="btn-ghost text-xs p-1.5 text-rose-500 hover:text-rose-400 hover:bg-rose-950/30"
                       title="Delete dataset"
                     >
@@ -135,57 +120,10 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {confirmTarget && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4"
-          onClick={() => !deleting && setPendingDelete(null)}
-        >
-          <div
-            className="card max-w-sm w-full p-6"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-start gap-3 mb-3">
-              <div className="w-9 h-9 rounded-full bg-rose-950 border border-rose-900 flex items-center justify-center text-rose-400 shrink-0">
-                <Trash2 size={16} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-sm font-semibold text-slate-100">Delete dataset?</h3>
-                <p className="text-xs text-slate-400 mt-1">
-                  <strong className="text-slate-200">"{confirmTarget.title}"</strong> will be
-                  removed from your library and from the backend cache. This action
-                  cannot be undone.
-                </p>
-              </div>
-            </div>
-
-            {deleteError && (
-              <div className="mt-3 p-2.5 border border-rose-700/60 bg-rose-950/30 rounded-lg text-xs text-rose-300 flex items-start gap-2">
-                <AlertCircle size={12} className="text-rose-400 shrink-0 mt-0.5" />
-                <span>{deleteError}</span>
-              </div>
-            )}
-
-            <div className="flex gap-2 justify-end mt-5">
-              <button
-                onClick={() => setPendingDelete(null)}
-                disabled={deleting}
-                className="btn-secondary text-xs disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmDelete}
-                disabled={deleting}
-                className="text-xs px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-medium transition-colors disabled:opacity-60 flex items-center gap-1.5"
-              >
-                {deleting
-                  ? <><Loader2 size={13} className="animate-spin" /> Deleting…</>
-                  : <><Trash2 size={13} /> Delete</>}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DeleteDatasetDialog
+        dataset={confirmTarget}
+        onClose={() => setPendingDeleteId(null)}
+      />
     </div>
   );
 }

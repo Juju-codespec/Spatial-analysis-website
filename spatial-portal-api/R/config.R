@@ -25,6 +25,12 @@ cfg <- function() {
       async_cells_threshold = as.integer(
         Sys.getenv("ASYNC_CELLS_THRESHOLD", "50000")
       ),
+      max_samples_analysis = as.integer(
+        Sys.getenv("MAX_SAMPLES_ANALYSIS", "500")
+      ),
+      min_cells_per_sample = as.integer(
+        Sys.getenv("MIN_CELLS_PER_SAMPLE", "10")
+      ),
       enable_vpd    = tolower(Sys.getenv("ENABLE_VPD", "true")) %in%
         c("1", "true", "yes"),
       version       = "0.1.0"

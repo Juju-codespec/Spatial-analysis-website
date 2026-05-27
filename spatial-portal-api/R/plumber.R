@@ -383,7 +383,7 @@ function(req, res) {
     res$status <- 400L
     return(list(
       error = "no_samples_after_filter",
-      message = sprintf(
+      message = spatial_res$analysis_message %||% sprintf(
         "No samples passed the minimum focal-cell threshold (%d %s cells).",
         min_focal_cells, type_a
       ),

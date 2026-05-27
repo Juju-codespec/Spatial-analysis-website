@@ -63,3 +63,54 @@ test_that("parse_rds_upload reads a saved portal dataset list", {
   expect_equal(out$meta$source, "upload")
   expect_equal(nrow(out$cells), nrow(cells))
 })
+
+test_that("parse_rds_upload reads a plain cell-level data.frame", {
+  df <- data.frame(
+    patient_id = rep(c("p1", "p2"), each = 3),
+    x = c(1, 2, 3, 4, 5, 6),
+    y = c(10, 20, 30, 40, 50, 60),
+    cell_type = rep(c("Tumor", "Macrophage"), 3),
+    futime = c(100, 100, 100, 200, 200, 200),
+    fustat = c(1, 1, 1, 0, 0, 0),
+    stringsAsFactors = FALSE
+  )
+  path <- tempfile(fileext = ".rds")
+  saveRDS(df, path)
+  on.exit(unlink(path), add = TRUE)
+
+  out <- parse_rds_upload(path, id = "upload-df", title = "Cell table RDS")
+  expect_equal(out$meta$id, "upload-df")
+  expect_equal(nrow(out$cells), 6L)
+  expect_setequal(out$cells$sample_id, c("p1", "p2"))
+  expect_equal(nrow(out$survival), 2L)
+  expect_true(all(c("time", "status") %in% names(out$survival)))
+})
+
+test_that("parse_rds_upload rejects survival-only data.frames", {
+  df <- data.frame(
+    patient_id = c("p1", "p2"),
+    futime = c(100, 200),
+    fustat = c(1, 0),
+    stringsAsFactors = FALSE
+  )
+  path <- tempfile(fileext = ".rds")
+  saveRDS(df, path)
+  on.exit(unlink(path), add = TRUE)
+
+  expect_error(
+    parse_rds_upload(path, id = "upload-bad"),
+    "x/y coordinate"
+  )
+})
+
+test_that("parse_cells_table uses patient_id as sample_id when sample_id missing", {
+  df <- data.frame(
+    patient_id = c("a", "b"),
+    x = c(1, 2),
+    y = c(3, 4),
+    cell_type = c("Tumor", "Tumor"),
+    stringsAsFactors = FALSE
+  )
+  cells <- parse_cells_table(df)
+  expect_equal(cells$sample_id, c("a", "b"))
+})

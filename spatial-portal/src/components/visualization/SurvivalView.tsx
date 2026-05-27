@@ -2,7 +2,7 @@
 // (Ripley's K reduced to L(r)-r at a chosen radius, or NN G), and plots
 // the resulting Kaplan-Meier curves stratified by the median split.
 
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, useEffect } from 'react';
 import Plot from '../../lib/plot';
 import type { Data, Layout } from 'plotly.js';
 import { useCox } from '../../hooks/useAnalysis';
@@ -16,7 +16,13 @@ interface Props {
   onSurvivalAttached?: () => void;
 }
 
-const DEFAULT_T_CELL_OPTIONS = ['CD8+ T Cell', 'CD4+ T Cell', 'T Cell'];
+const DEFAULT_T_CELL_OPTIONS = ['CD8+ T Cell', 'CD4+ T Cell', 'T Cell', 'CD8_T'];
+
+function pickDefaultCellType(available: string[]): string {
+  if (available.length === 0) return DEFAULT_T_CELL_OPTIONS[0];
+  const preferred = available.find(ct => DEFAULT_T_CELL_OPTIONS.includes(ct));
+  return preferred ?? available[0];
+}
 
 export default function SurvivalView({
   datasetId,
@@ -25,9 +31,15 @@ export default function SurvivalView({
   onSurvivalAttached,
 }: Props) {
   const tCellOptions = availableCellTypes.length > 0 ? availableCellTypes : DEFAULT_T_CELL_OPTIONS;
-  const [typeA, setTypeA] = useState(
-    availableCellTypes.find(ct => DEFAULT_T_CELL_OPTIONS.includes(ct)) ?? tCellOptions[0],
-  );
+  const [typeA, setTypeA] = useState(() => pickDefaultCellType(tCellOptions));
+
+  useEffect(() => {
+    if (availableCellTypes.length === 0) return;
+    setTypeA(prev =>
+      availableCellTypes.includes(prev) ? prev : pickDefaultCellType(availableCellTypes),
+    );
+  }, [availableCellTypes]);
+
   const [statistic, setStatistic] = useState<'K' | 'G'>('K');
   const [radius, setRadius] = useState(50);
   const [dichotomize, setDichotomize] = useState<'median' | 'tertile' | 'none'>('none');

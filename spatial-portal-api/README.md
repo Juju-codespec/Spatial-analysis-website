@@ -61,7 +61,7 @@ RDS under `data-cache/`.
 
 `POST /datasets` accepts multipart form data:
 
-- `cells` (CSV/TSV) **or** `rds` / `spe` (`.rds` containing a `SpatialExperiment` or portal dataset list)
+- `cells` (CSV/TSV) **or** `rds` / `spe` (`.rds` containing a `SpatialExperiment`, portal dataset list, or cell-level `data.frame` with `x`/`y` and `cell_type`)
   - CSV: `x`, `y` columns and either `phenotype_*` boolean columns or a `cell_type` column
 - `survival` (optional): CSV/TSV with `sample_id`, `time`, `status`,
   plus any covariate columns to use in the Cox model.
