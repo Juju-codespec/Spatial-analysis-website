@@ -1,5 +1,5 @@
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   ArrowLeft, Download, Share2, BookOpen, GitCompare,
   MessageSquare, ChevronRight, Users, Calendar,
@@ -9,14 +9,17 @@ import {
 import { useStore } from '../store/useStore';
 import { MOCK_COMMENTS } from '../data/mockData';
 import SpatialPlot from '../components/visualization/SpatialPlot';
+import CellTypeCountsPanel from '../components/visualization/CellTypeCountsPanel';
+import { countCellTypes } from '../utils/cellCounts';
 import HeatmapView from '../components/visualization/HeatmapView';
 import LayerControls from '../components/visualization/LayerControls';
 import SpatialStatsView from '../components/visualization/SpatialStatsView';
 import SurvivalView from '../components/visualization/SurvivalView';
 import DeleteDatasetDialog from '../components/dataset/DeleteDatasetDialog';
-import { getDataset } from '../api/client';
+import { getDataset, getCells } from '../api/client';
 import { canUserDeleteDataset } from '../utils/datasetOwnership';
 import type { ApiDatasetDetail } from '../api/types';
+import type { CellPoint, Dataset } from '../types';
 import clsx from 'clsx';
 
 type ViewTab = 'spatial' | 'heatmap' | 'stats' | 'survival';
@@ -48,9 +51,80 @@ export default function DatasetDetail() {
 
   const [activeMarker, setActiveMarker] = useState('');
   const [viewTab, setViewTab] = useState<ViewTab>('spatial');
+  const [selectedSample, setSelectedSample] = useState('');
+  const [sampleCells, setSampleCells] = useState<CellPoint[] | null>(null);
+  const [sampleCellTypeCounts, setSampleCellTypeCounts] = useState<Record<string, number> | null>(null);
+  const [sampleCellsLoading, setSampleCellsLoading] = useState(false);
   const [sideTab, setSideTab] = useState<SideTab>('layers');
   const [comment, setComment] = useState('');
   const [localComments, setLocalComments] = useState(MOCK_COMMENTS.filter(c => c.datasetId === id));
+
+  useEffect(() => {
+    if (!id || !selectedSample) {
+      setSampleCells(null);
+      setSampleCellTypeCounts(null);
+      return;
+    }
+    let cancelled = false;
+    setSampleCellsLoading(true);
+    getCells(id, { sample_id: selectedSample, downsample: 30000 })
+      .then(res => {
+        if (cancelled) return;
+        setSampleCells(
+          res.cells.map(c => ({
+            x: c.x,
+            y: c.y,
+            cellType: c.cell_type,
+            markers: {},
+            sampleId: c.sample_id,
+          })),
+        );
+        setSampleCellTypeCounts(
+          res.cell_types ?? countCellTypes(res.cells.map(c => ({
+            x: c.x,
+            y: c.y,
+            cellType: c.cell_type,
+            markers: {},
+          }))),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSampleCells(null);
+          setSampleCellTypeCounts(null);
+        }
+      })
+      .finally(() => { if (!cancelled) setSampleCellsLoading(false); });
+    return () => { cancelled = true; };
+  }, [id, selectedSample]);
+
+  const plotDataset: Dataset | undefined = useMemo(() => {
+    if (!dataset) return undefined;
+    if (!sampleCells) return dataset;
+    return { ...dataset, cells: sampleCells, cellCount: sampleCells.length };
+  }, [dataset, sampleCells]);
+
+  const spatialCellTypeCounts = useMemo(() => {
+    if (!dataset) return {};
+    if (selectedSample) {
+      return sampleCellTypeCounts ?? (sampleCells ? countCellTypes(sampleCells) : {});
+    }
+    if (apiDetail?.cell_types && Object.keys(apiDetail.cell_types).length > 0) {
+      return apiDetail.cell_types;
+    }
+    return countCellTypes(dataset.cells);
+  }, [dataset, selectedSample, sampleCellTypeCounts, sampleCells, apiDetail]);
+
+  const spatialCountsTitle = selectedSample
+    ? `Cell types — ${selectedSample}`
+    : 'Cell types — all samples';
+  const spatialCountsSubtitle = selectedSample
+    ? undefined
+    : apiDetail?.cell_types
+      ? 'full dataset'
+      : dataset.cells.length < dataset.cellCount
+        ? 'from displayed cells'
+        : undefined;
 
   if (!dataset) {
     return (
@@ -167,7 +241,43 @@ export default function DatasetDetail() {
             </div>
 
             {viewTab === 'spatial' && (
-              <SpatialPlot dataset={dataset} activeMarker={activeMarker} height={520} />
+              <div className="space-y-3">
+                {apiDetail && apiDetail.samples.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-3 text-xs">
+                    <label className="flex items-center gap-2">
+                      <span className="text-slate-500">Sample / core</span>
+                      <select
+                        className="input text-xs min-w-[180px]"
+                        value={selectedSample}
+                        onChange={e => setSelectedSample(e.target.value)}
+                      >
+                        <option value="">All samples (downsampled)</option>
+                        {apiDetail.samples.map(s => (
+                          <option key={s.sample_id} value={s.sample_id}>
+                            {s.sample_id} ({s.n_cells.toLocaleString()} cells)
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {sampleCellsLoading && (
+                      <span className="text-slate-500">Loading sample…</span>
+                    )}
+                    {selectedSample && sampleCells && !sampleCellsLoading && (
+                      <span className="text-slate-600">
+                        Showing {sampleCells.length.toLocaleString()} cells from {selectedSample}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <CellTypeCountsPanel
+                  title={spatialCountsTitle}
+                  counts={spatialCellTypeCounts}
+                  layers={dataset.layers}
+                  loading={!!selectedSample && sampleCellsLoading}
+                  subtitle={spatialCountsSubtitle}
+                />
+                <SpatialPlot dataset={plotDataset ?? dataset} activeMarker={activeMarker} height={520} />
+              </div>
             )}
 
             {viewTab === 'heatmap' && (

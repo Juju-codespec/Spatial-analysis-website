@@ -80,6 +80,13 @@ function(id, sample_id = NULL, cell_type = NULL, downsample = NULL, res) {
     cells <- cells[get("cell_type") %in% wanted]
   }
 
+  n_filtered  <- nrow(cells)
+  type_counts <- cell_type_counts(cells)
+  n_total <- nrow(ds$cells)
+  if (!is.null(sid_filter) && nzchar(sid_filter)) {
+    n_total <- n_filtered
+  }
+
   cap <- cfg()$cells_response_cap
   ds_n <- if (!is.null(downsample)) as.integer(downsample) else cap
   if (!is.na(ds_n) && nrow(cells) > ds_n) {
@@ -89,8 +96,9 @@ function(id, sample_id = NULL, cell_type = NULL, downsample = NULL, res) {
   keep_cols <- intersect(c("sample_id", "x", "y", "cell_type"), names(cells))
   list(
     n_returned = nrow(cells),
-    n_total = nrow(ds$cells),
-    cells = as.data.frame(cells[, ..keep_cols])
+    n_total    = n_total,
+    cell_types = type_counts,
+    cells      = as.data.frame(cells[, ..keep_cols])
   )
 }
 

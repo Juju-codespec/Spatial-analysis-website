@@ -42,6 +42,7 @@ export interface ApiCellPoint {
 export interface ApiCellsResponse {
   n_returned: number;
   n_total: number;
+  cell_types?: Record<string, number>;
   cells: ApiCellPoint[];
 }
 
