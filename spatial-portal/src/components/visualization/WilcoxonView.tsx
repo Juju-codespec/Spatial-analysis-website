@@ -72,10 +72,7 @@ export default function WilcoxonView({
       <div className="card p-5 border-dashed border-slate-700">
         <p className="text-xs font-semibold text-slate-300">Group comparison (Wilcoxon)</p>
         <p className="text-xs text-slate-500 mt-2">
-          Attach a <code className="text-brand-400">survival.csv</code> with{' '}
-          <code className="text-brand-400">sample_id</code>,{' '}
-          <code className="text-brand-400">time</code>, and{' '}
-          <code className="text-brand-400">status</code> on the Survival tab.
+          Attach clinical metadata on the Survival or Clinical Analysis tab.
         </p>
       </div>
     );
