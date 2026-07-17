@@ -42,7 +42,7 @@ export default function DatasetDetail() {
   // /datasets and hasn't been visualised yet.
   useEffect(() => {
     if (!id) return;
-    void hydrateDatasetCells(id);
+    void hydrateDatasetCells(id, 'full');
     // Pull the detail payload (samples list, has_survival, cell-type counts)
     // separately from cells so the new tabs always know whether survival
     // analysis is available even before any spatial map is rendered.

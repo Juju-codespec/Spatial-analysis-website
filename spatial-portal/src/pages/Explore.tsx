@@ -5,10 +5,17 @@ import { useStore, useFilteredDatasets } from '../store/useStore';
 import { CANCER_TYPES, TECHNIQUES, ALL_MARKERS } from '../data/mockData';
 import DatasetCard from '../components/dataset/DatasetCard';
 import clsx from 'clsx';
+import type { Dataset } from '../types';
+
+function needsPreviewHydration(ds: Dataset): boolean {
+  if (ds.cellsLoadLevel === 'preview' || ds.cellsLoadLevel === 'full') return false;
+  if (ds.cells.length > 0) return false;
+  return true;
+}
 
 export default function Explore() {
   const [searchParams] = useSearchParams();
-  const { filters, setFilters, resetFilters } = useStore();
+  const { filters, setFilters, resetFilters, hydrateDatasetCells, apiStatus } = useStore();
   const datasets = useFilteredDatasets();
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [showFilters, setShowFilters] = useState(true);
@@ -17,6 +24,28 @@ export default function Explore() {
     const q = searchParams.get('search');
     if (q) setFilters({ search: q });
   }, [searchParams]);
+
+  // Eagerly load downsampled cell maps for every visible dataset card.
+  useEffect(() => {
+    if (apiStatus === 'offline') return;
+    const pending = datasets.filter(needsPreviewHydration).map(ds => ds.id);
+    if (pending.length === 0) return;
+
+    let cancelled = false;
+    let cursor = 0;
+    const workers = Math.min(4, pending.length);
+
+    const runWorker = async () => {
+      while (cursor < pending.length) {
+        if (cancelled) return;
+        const id = pending[cursor++];
+        await hydrateDatasetCells(id, 'preview');
+      }
+    };
+
+    void Promise.all(Array.from({ length: workers }, runWorker));
+    return () => { cancelled = true; };
+  }, [datasets, hydrateDatasetCells, apiStatus]);
 
   const hasActiveFilters = Object.values(filters).some(v => v && v !== 'All');
 

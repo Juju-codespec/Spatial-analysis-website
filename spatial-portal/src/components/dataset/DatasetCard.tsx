@@ -30,6 +30,11 @@ export default function DatasetCard({ dataset, compact = false }: Props) {
           <div className="absolute inset-0 scale-[0.85] origin-top-left -translate-x-4 -translate-y-4">
             <SpatialPlot dataset={dataset} miniMode height={176} />
           </div>
+          {dataset.cells.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80">
+              <span className="text-[10px] text-slate-500 animate-pulse">Loading preview…</span>
+            </div>
+          )}
           <div className="absolute inset-0 bg-gradient-to-t from-slate-900/95 via-slate-900/30 to-transparent" />
           <div className="absolute top-2 right-2 flex items-center gap-1.5">
             <span className={clsx('badge text-[10px]', TECHNIQUE_TAG_CLASS[dataset.technique] || 'tag')}>
