@@ -51,6 +51,8 @@ export interface Dataset {
   publication?: string;
   thumbnail?: string;
   cells: CellPoint[];
+  /** Tracks API cell fetch depth: preview (Explore cards) vs full (dataset viewer). */
+  cellsLoadLevel?: 'none' | 'preview' | 'full';
   layers: SpatialLayer[];
   methods: string;
   dataSource: string;

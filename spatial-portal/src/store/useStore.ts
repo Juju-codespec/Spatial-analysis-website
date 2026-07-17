@@ -25,7 +25,26 @@ interface AppState {
    */
   removeDataset: (id: string) => Promise<void>;
   loadDatasets: () => Promise<void>;
-  hydrateDatasetCells: (id: string) => Promise<void>;
+  hydrateDatasetCells: (id: string, level?: 'preview' | 'full') => Promise<void>;
+}
+
+const PREVIEW_CELL_CAP = 6_000;
+const FULL_CELL_CAP = 30_000;
+const hydratingIds = new Set<string>();
+
+function resolveCellsLoadLevel(ds: Dataset): 'none' | 'preview' | 'full' {
+  if (ds.cellsLoadLevel) return ds.cellsLoadLevel;
+  return ds.cells.length > 0 ? 'full' : 'none';
+}
+
+function preserveHydratedFields(next: Dataset, prev: Dataset | undefined): Dataset {
+  if (!prev || prev.cells.length === 0) return next;
+  return {
+    ...next,
+    cells: prev.cells,
+    cellsLoadLevel: prev.cellsLoadLevel ?? resolveCellsLoadLevel(prev),
+    layers: prev.layers.length > 0 ? prev.layers : next.layers,
+  };
 }
 
 const DEFAULT_FILTERS: FilterState = {
@@ -117,17 +136,19 @@ export const useStore = create<AppState>((set, get) => ({
       // local contributor metadata if we have it so they appear under
       // "My Datasets" on the Dashboard.
       const enriched = mapped.map(api => {
-        if (api.contributorId !== 'upload') return api;
         const local = prev.find(d => d.id === api.id);
-        if (!local) return api;
-        return {
-          ...api,
-          title:         local.title || api.title,
-          description:   local.description || api.description,
-          contributor:   local.contributor,
-          contributorId: local.contributorId,
-          institution:   local.institution,
-        };
+        let merged = api;
+        if (api.contributorId === 'upload' && local) {
+          merged = {
+            ...api,
+            title:         local.title || api.title,
+            description:   local.description || api.description,
+            contributor:   local.contributor,
+            contributorId: local.contributorId,
+            institution:   local.institution,
+          };
+        }
+        return preserveHydratedFields(merged, local);
       });
       const mockKept = MOCK_DATASETS.filter(d => !apiIds.has(d.id));
       // Preserve any local user uploads that didn't make it to the backend
@@ -145,18 +166,23 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  // Lazy-load the cells for one API-backed dataset (mock datasets already
-  // ship with cells in memory). Called by DatasetDetail before plotting.
-  hydrateDatasetCells: async (id: string) => {
+  // Lazy-load cells for API-backed datasets. Explore uses preview caps;
+  // DatasetDetail upgrades to the full downsampled map.
+  hydrateDatasetCells: async (id: string, level: 'preview' | 'full' = 'full') => {
     const ds = get().datasets.find(d => d.id === id);
     if (!ds) return;
-    // Mock datasets are pre-hydrated; only fetch for API datasets that
-    // currently have an empty cells array.
-    if (ds.cells.length > 0) return;
+
+    const current = resolveCellsLoadLevel(ds);
+    if (level === 'preview' && (current === 'preview' || current === 'full')) return;
+    if (level === 'full' && current === 'full') return;
+    if (hydratingIds.has(id)) return;
+
+    hydratingIds.add(id);
+    const downsample = level === 'preview' ? PREVIEW_CELL_CAP : FULL_CELL_CAP;
     try {
       const [detail, cells] = await Promise.all([
         getDataset(id),
-        getCells(id, { downsample: 30000 }),
+        getCells(id, { downsample }),
       ]);
       const points: CellPoint[] = cells.cells.map(c => ({
         x: c.x,
@@ -167,11 +193,20 @@ export const useStore = create<AppState>((set, get) => ({
       const layers = buildLayersFromCellTypes(Object.keys(detail.cell_types));
       set(state => ({
         datasets: state.datasets.map(d => d.id === id
-          ? { ...d, cells: points, layers, cellCount: detail.meta.n_cells, sampleCount: detail.meta.sample_count }
+          ? {
+              ...d,
+              cells: points,
+              layers,
+              cellsLoadLevel: level,
+              cellCount: detail.meta.n_cells,
+              sampleCount: detail.meta.sample_count,
+            }
           : d),
       }));
     } catch {
       // Leave dataset un-hydrated; UI will fall back to the empty state.
+    } finally {
+      hydratingIds.delete(id);
     }
   },
 }));
