@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Microscope, Search, Upload, BarChart3, Grid3X3, LogIn, LogOut, ChevronDown, Shield, User } from 'lucide-react';
+import { Microscope, Search, Upload, BarChart3, Grid3X3, LogIn, LogOut, ChevronDown, Shield, User, BookOpen } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 import { useState } from 'react';
 import clsx from 'clsx';
@@ -8,6 +8,7 @@ const NAV = [
   { label: 'Explore', to: '/explore', icon: Grid3X3 },
   { label: 'Compare', to: '/compare', icon: BarChart3 },
   { label: 'Contribute', to: '/upload', icon: Upload },
+  { label: 'Docs', to: '/docs', icon: BookOpen },
 ];
 
 export default function Header() {

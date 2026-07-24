@@ -24,7 +24,10 @@ function pickDefaultCellType(available: string[]): string {
   return preferred ?? available[0];
 }
 
-export default function SpatialStatsView({ datasetId, availableCellTypes }: Props) {
+export default function SpatialStatsView({
+  datasetId,
+  availableCellTypes,
+}: Props) {
   const tCellOptions = availableCellTypes.length > 0 ? availableCellTypes : DEFAULT_T_CELL_OPTIONS;
 
   const [typeA, setTypeA] = useState<string>(() => pickDefaultCellType(tCellOptions));
@@ -175,7 +178,8 @@ function MethodsBlurb({
         {envelopes ? ` CSR permutation envelopes: ${DEFAULT_NSIM} sims (observed vs null).` : ' CSR envelopes off.'}
       </p>
       <p>
-        Cox defaults elsewhere: K radius = 50 px, G radius = 20 px (user-adjustable).
+        Clinical outcome modeling (cell counts, survival, regression) lives in the
+        Clinical Analysis tab; spatial clustering can be added there as an optional predictor.
       </p>
     </div>
   );

@@ -22,7 +22,8 @@ Sys.setenv(ENABLE_VPD = "false")
 
 src_dir <- file.path(project_root, "R")
 for (f in c("config.R", "cors.R", "storage.R", "cells.R",
-            "spatial.R", "survival.R", "jobs.R")) {
+            "spatial.R", "survival.R", "wilcoxon.R", "linear.R",
+            "clinical.R", "jobs.R")) {
   source(file.path(src_dir, f))
 }
 

@@ -11,7 +11,10 @@ cfg <- function() {
     .cfg_cache$values <- list(
       host          = Sys.getenv("HOST", "0.0.0.0"),
       port          = as.integer(Sys.getenv("PORT", "8000")),
-      cors_origin   = Sys.getenv("CORS_ORIGIN", "http://localhost:5173"),
+      cors_origin   = Sys.getenv(
+        "CORS_ORIGIN",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
+      ),
       api_key       = Sys.getenv("API_KEY", ""),
       data_cache    = Sys.getenv("DATA_CACHE",
                                  file.path(here_root(), "data-cache")),
@@ -33,6 +36,8 @@ cfg <- function() {
       ),
       enable_vpd    = tolower(Sys.getenv("ENABLE_VPD", "true")) %in%
         c("1", "true", "yes"),
+      # Optional CSV (sample_id + race) merged into vpd-ovarian clinical metadata.
+      vpd_ovarian_race_csv = Sys.getenv("VPD_OVARIAN_RACE_CSV", ""),
       version       = "0.1.0"
     )
   }

@@ -2,6 +2,21 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { Dataset, CellPoint } from '../../types';
 import { ZoomIn, ZoomOut, Maximize2, RotateCcw } from 'lucide-react';
 
+// Compute the equal-scale origin that centres the data cloud within the canvas.
+function scaleAndOrigin(
+  canvasW: number, canvasH: number,
+  rangeX: number, rangeY: number,
+  zoom: number, padding: number,
+) {
+  const scale = Math.min(
+    (canvasW - padding * 2) / rangeX,
+    (canvasH - padding * 2) / rangeY,
+  ) * zoom;
+  const originX = padding + (canvasW - padding * 2 - rangeX * scale) / 2;
+  const originY = padding + (canvasH - padding * 2 - rangeY * scale) / 2;
+  return { scale, originX, originY };
+}
+
 const CELL_TYPE_COLORS: Record<string, string> = {
   'Tumor':        '#ef4444',
   'CD8+ T Cell':  '#3b82f6',
@@ -22,6 +37,7 @@ interface Props {
 }
 
 export default function SpatialPlot({ dataset, activeMarker, miniMode = false, height = 480 }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -31,6 +47,9 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const animFrameRef = useRef<number>(0);
   const hoverRafRef = useRef<number>(0);
+  // drawRef lets the ResizeObserver always call the latest draw without
+  // needing to be re-registered every time draw changes.
+  const drawRef = useRef<() => void>(() => {});
 
   // Stable identity → draw() doesn't get a new reference on every render.
   const visibleLayers = useMemo(
@@ -94,13 +113,11 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
 
     const { minX, minY, rangeX, rangeY } = bounds;
     const padding = 60;
-    const scaleX = (W - padding * 2) / rangeX * zoom;
-    const scaleY = (H - padding * 2) / rangeY * zoom;
-    const scale = Math.min(scaleX, scaleY);
+    const { scale, originX, originY } = scaleAndOrigin(W, H, rangeX, rangeY, zoom, padding);
 
     const toScreen = (x: number, y: number) => ({
-      sx: padding + (x - minX) * scale + pan.x,
-      sy: padding + (y - minY) * scale + pan.y,
+      sx: originX + (x - minX) * scale + pan.x,
+      sy: originY + (y - minY) * scale + pan.y,
     });
 
     const r = miniMode ? 2 : Math.max(2, 4 * zoom);
@@ -137,6 +154,29 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
       ctx.stroke();
     }
   }, [dataset.cells, zoom, pan, activeMarker, hoveredCell, miniMode, visibleLayers, getMarkerColor, bounds]);
+
+  // Keep drawRef up to date so the ResizeObserver can always call the latest draw.
+  useEffect(() => { drawRef.current = draw; }, [draw]);
+
+  // Sync canvas buffer size to its CSS display size so there is no asymmetric
+  // pixel-stretching that would make circular tissue cores appear oval.
+  useEffect(() => {
+    const container = containerRef.current;
+    const canvas = canvasRef.current;
+    if (!container || !canvas) return;
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          canvas.width  = Math.round(width);
+          canvas.height = Math.round(height);
+          animFrameRef.current = requestAnimationFrame(() => drawRef.current());
+        }
+      }
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     animFrameRef.current = requestAnimationFrame(draw);
@@ -194,12 +234,12 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
 
       const { minX, minY, rangeX, rangeY } = bounds;
       const padding = 60;
-      const scaleX = (canvas.width  - padding * 2) / rangeX * zoom;
-      const scaleY = (canvas.height - padding * 2) / rangeY * zoom;
-      const scale = Math.min(scaleX, scaleY);
+      const { scale, originX, originY } = scaleAndOrigin(
+        canvas.width, canvas.height, rangeX, rangeY, zoom, padding,
+      );
 
-      const worldX = (coords.cx - padding - pan.x) / scale + minX;
-      const worldY = (coords.cy - padding - pan.y) / scale + minY;
+      const worldX = (coords.cx - originX - pan.x) / scale + minX;
+      const worldY = (coords.cy - originY - pan.y) / scale + minY;
       const threshold = 8 / scale;
 
       let near: CellPoint | null = null;
@@ -223,11 +263,9 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
   const reset = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
 
   return (
-    <div className="relative rounded-xl overflow-hidden border border-slate-800" style={{ height }}>
+    <div ref={containerRef} className="relative rounded-xl overflow-hidden border border-slate-800" style={{ height }}>
       <canvas
         ref={canvasRef}
-        width={miniMode ? 400 : 900}
-        height={miniMode ? 300 : height}
         className="w-full h-full cursor-crosshair"
         style={{ cursor: dragging ? 'grabbing' : 'crosshair' }}
         onWheel={handleWheel}

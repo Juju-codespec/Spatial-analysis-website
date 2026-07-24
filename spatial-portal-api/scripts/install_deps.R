@@ -3,8 +3,10 @@
 
 cran <- c(
   "plumber", "spatstat.geom", "spatstat.explore", "spatstat.random",
-  "survival", "dplyr", "data.table", "jsonlite", "future", "promises",
-  "uuid", "vroom", "logger"
+  "survival", "sandwich", "dplyr", "data.table", "jsonlite", "future", "promises",
+  "uuid", "vroom", "logger", "arrow",   "ggplot2",
+  "aod",
+  "glmmTMB"
 )
 
 missing <- cran[!vapply(cran, requireNamespace, quietly = TRUE, FUN.VALUE = logical(1))]

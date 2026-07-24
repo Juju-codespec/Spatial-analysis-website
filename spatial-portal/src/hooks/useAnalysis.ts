@@ -4,17 +4,49 @@ import { useEffect, useState } from 'react';
 import {
   ApiError,
   analyzeCox,
+  analyzeBivariateCox,
   analyzeNnG,
   analyzeRipleyK,
+  analyzeLinear,
+  analyzeWilcoxon,
+  analyzeClinicalWilcoxon,
+  analyzeClinicalLinear,
+  analyzeClinicalBetaBinomial,
+  analyzeClinicalSurvival,
+  getClinicalFeatures,
+  getClinicalSummary,
+  analyzeClinicalSummaryTests,
+  getIdOverlap,
+  associationScreeningAvailable,
+  analyzeClinicalAssociationMatrix,
   getJob,
+  type ClinicalSummaryTestsRequest,
+  type ClinicalAssociationMatrixRequest,
+  type ClinicalLinearRequest,
+  type ClinicalBetaBinomialRequest,
+  type ClinicalSurvivalRequest,
+  type ClinicalWilcoxonRequest,
   type CoxRequest,
+  type BivariateCoxRequest,
+  type ClinicalSpatialQuery,
+  type LinearRequest,
   type RipleyKRequest,
+  type WilcoxonRequest,
 } from '../api/client';
 import type {
+  ClinicalLinearResponse,
+  ClinicalSurvivalResponse,
+  ClinicalWilcoxonResponse,
+  ClinicalAssociationMatrixResponse,
+  IdOverlapResponse,
   CoxResponse,
+  BivariateCoxResponse,
   JobStatus,
+  LinearResponse,
   NnGResponse,
   RipleyKResponse,
+  WilcoxonResponse,
+  BetaBinomialResponse,
 } from '../api/types';
 
 type AsyncState<T> = {
@@ -91,6 +123,104 @@ export function useNnG(req: RipleyKRequest | null) {
 
 export function useCox(req: CoxRequest | null) {
   return useAsync<CoxRequest, CoxResponse>(req, analyzeCox);
+}
+
+export function useBivariateCox(req: BivariateCoxRequest | null) {
+  return useAsync<BivariateCoxRequest, BivariateCoxResponse>(req, analyzeBivariateCox);
+}
+
+export function useWilcoxon(req: WilcoxonRequest | null) {
+  return useAsync<WilcoxonRequest, WilcoxonResponse>(req, analyzeWilcoxon);
+}
+
+export function useLinear(req: LinearRequest | null) {
+  return useAsync<LinearRequest, LinearResponse>(req, analyzeLinear);
+}
+
+export function useClinicalFeatures(
+  datasetId: string | null,
+  level: 'sample' | 'patient' = 'sample',
+  spatial?: ClinicalSpatialQuery | null,
+) {
+  const req = datasetId ? { datasetId, level, spatial: spatial ?? null } : null;
+  return useAsync(
+    req,
+    r => getClinicalFeatures(r.datasetId, r.level, r.spatial ?? undefined),
+  );
+}
+
+export function useClinicalSummary(
+  datasetId: string | null,
+  level: 'sample' | 'patient' = 'sample',
+  spatial?: ClinicalSpatialQuery | null,
+) {
+  const req = datasetId ? { datasetId, level, spatial: spatial ?? null } : null;
+  return useAsync(req, r => getClinicalSummary(r.datasetId, r.level, r.spatial ?? undefined));
+}
+
+export function useClinicalSummaryTests(req: ClinicalSummaryTestsRequest | null) {
+  return useAsync(req, analyzeClinicalSummaryTests);
+}
+
+export function useClinicalAssociationMatrix(req: ClinicalAssociationMatrixRequest | null) {
+  return useAsync<ClinicalAssociationMatrixRequest, ClinicalAssociationMatrixResponse>(
+    req,
+    analyzeClinicalAssociationMatrix,
+  );
+}
+
+export function useIdOverlap(datasetId: string | null, enabled = true) {
+  const [state, setState] = useState<AsyncState<IdOverlapResponse>>(initial());
+  const key = datasetId && enabled ? datasetId : '';
+
+  useEffect(() => {
+    if (!datasetId || !enabled) return;
+    let cancelled = false;
+    setState({ data: null, loading: true, error: null });
+    getIdOverlap(datasetId).then(
+      data => {
+        if (!cancelled) setState({ data, loading: false, error: null });
+      },
+      err => {
+        if (!cancelled) {
+          setState({ data: null, loading: false, error: errorMessage(err) });
+        }
+      },
+    );
+    return () => { cancelled = true; };
+  }, [key, datasetId, enabled]);
+
+  return state;
+}
+
+export { associationScreeningAvailable };
+
+export function useClinicalWilcoxon(req: ClinicalWilcoxonRequest | null) {
+  return useAsync<ClinicalWilcoxonRequest, ClinicalWilcoxonResponse>(
+    req,
+    analyzeClinicalWilcoxon,
+  );
+}
+
+export function useClinicalLinear(req: ClinicalLinearRequest | null) {
+  return useAsync<ClinicalLinearRequest, ClinicalLinearResponse>(
+    req,
+    analyzeClinicalLinear,
+  );
+}
+
+export function useClinicalBetaBinomial(req: ClinicalBetaBinomialRequest | null) {
+  return useAsync<ClinicalBetaBinomialRequest, BetaBinomialResponse>(
+    req,
+    analyzeClinicalBetaBinomial,
+  );
+}
+
+export function useClinicalSurvival(req: ClinicalSurvivalRequest | null) {
+  return useAsync<ClinicalSurvivalRequest, ClinicalSurvivalResponse>(
+    req,
+    analyzeClinicalSurvival,
+  );
 }
 
 export function useJobResult<T>(jobId: string | null, intervalMs = 1500): AsyncState<T> & { status: JobStatus<T>['status'] | null } {

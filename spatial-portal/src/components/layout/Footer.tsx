@@ -26,7 +26,8 @@ export default function Footer() {
           <div>
             <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-3">Resources</p>
             <ul className="space-y-2">
-              {['Documentation', 'Data Format Guide', 'API Reference', 'Changelog'].map(l => (
+              <li><Link to="/docs" className="text-xs text-slate-400 hover:text-slate-200 transition-colors">Documentation</Link></li>
+              {['Data Format Guide', 'API Reference', 'Changelog'].map(l => (
                 <li key={l}><span className="text-xs text-slate-400 hover:text-slate-200 cursor-pointer transition-colors">{l}</span></li>
               ))}
             </ul>

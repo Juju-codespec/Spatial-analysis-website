@@ -4,7 +4,7 @@ import {
   ArrowLeft, Download, Share2, BookOpen, GitCompare,
   MessageSquare, ChevronRight, Users, Calendar,
   MapPin, ExternalLink, Send, Layers, BarChart2, Info,
-  Activity, HeartPulse, Trash2
+  Activity, HeartPulse, Stethoscope, Trash2, ScanLine, Monitor
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { MOCK_COMMENTS } from '../data/mockData';
@@ -15,14 +15,16 @@ import HeatmapView from '../components/visualization/HeatmapView';
 import LayerControls from '../components/visualization/LayerControls';
 import SpatialStatsView from '../components/visualization/SpatialStatsView';
 import SurvivalView from '../components/visualization/SurvivalView';
+import ClinicalAnalysisView from '../components/visualization/ClinicalAnalysisView';
 import DeleteDatasetDialog from '../components/dataset/DeleteDatasetDialog';
-import { getDataset, getCells } from '../api/client';
+import { getDataset, getCells, getCellPlot, getPhenotypeSummary } from '../api/client';
 import { canUserDeleteDataset } from '../utils/datasetOwnership';
-import type { ApiDatasetDetail } from '../api/types';
+import type { ApiDatasetDetail, PhenotypeSummaryResponse } from '../api/types';
+import type { CellPlotResponse } from '../api/types';
 import type { CellPoint, Dataset } from '../types';
 import clsx from 'clsx';
 
-type ViewTab = 'spatial' | 'heatmap' | 'stats' | 'survival';
+type ViewTab = 'spatial' | 'heatmap' | 'stats' | 'survival' | 'clinical';
 type SideTab = 'layers' | 'metadata' | 'comments';
 
 export default function DatasetDetail() {
@@ -58,6 +60,18 @@ export default function DatasetDetail() {
   const [sideTab, setSideTab] = useState<SideTab>('layers');
   const [comment, setComment] = useState('');
   const [localComments, setLocalComments] = useState(MOCK_COMMENTS.filter(c => c.datasetId === id));
+
+  // ggplot server-rendered map state
+  type PlotMode = 'canvas' | 'ggplot';
+  const [plotMode, setPlotMode] = useState<PlotMode>('canvas');
+  const [ggplotData, setGgplotData] = useState<CellPlotResponse | null>(null);
+  const [ggplotLoading, setGgplotLoading] = useState(false);
+  const [ggplotError, setGgplotError] = useState<string | null>(null);
+
+  // Phenotype summary for the Expression Heatmap (lazy-fetched on first view)
+  const [phenotypeSummary, setPhenotypeSummary] = useState<PhenotypeSummaryResponse | null>(null);
+  const [phenotypeSummaryLoading, setPhenotypeSummaryLoading] = useState(false);
+  const [phenotypeSummaryFetched, setPhenotypeSummaryFetched] = useState(false);
 
   useEffect(() => {
     if (!id || !selectedSample) {
@@ -98,6 +112,48 @@ export default function DatasetDetail() {
     return () => { cancelled = true; };
   }, [id, selectedSample]);
 
+  // Fetch the server-rendered ggplot image whenever the sample or mode changes.
+  useEffect(() => {
+    if (plotMode !== 'ggplot' || !id || !selectedSample) {
+      setGgplotData(null);
+      setGgplotError(null);
+      return;
+    }
+    let cancelled = false;
+    setGgplotLoading(true);
+    setGgplotError(null);
+    getCellPlot(id, { sample_id: selectedSample, width: 900, height: 750 })
+      .then(data => { if (!cancelled) { setGgplotData(data); setGgplotError(null); } })
+      .catch(err => { if (!cancelled) { setGgplotError(String(err?.message ?? err)); setGgplotData(null); } })
+      .finally(() => { if (!cancelled) setGgplotLoading(false); });
+    return () => { cancelled = true; };
+  }, [id, selectedSample, plotMode]);
+
+  // Lazy-fetch phenotype summary the first time the heatmap tab is opened for
+  // an API-backed dataset (one whose cells were loaded without marker values).
+  useEffect(() => {
+    if (viewTab !== 'heatmap' || !id || phenotypeSummaryFetched) return;
+    // Only fetch for API-backed datasets — mock datasets have local cell markers
+    if (!apiDetail && dataset?.markers && dataset.markers.length > 0) return;
+    let cancelled = false;
+    setPhenotypeSummaryLoading(true);
+    getPhenotypeSummary(id)
+      .then(data => {
+        if (!cancelled) {
+          setPhenotypeSummary(data);
+          setPhenotypeSummaryFetched(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPhenotypeSummary(null);
+          setPhenotypeSummaryFetched(true);
+        }
+      })
+      .finally(() => { if (!cancelled) setPhenotypeSummaryLoading(false); });
+    return () => { cancelled = true; };
+  }, [viewTab, id, phenotypeSummaryFetched, apiDetail, dataset?.markers]);
+
   const plotDataset: Dataset | undefined = useMemo(() => {
     if (!dataset) return undefined;
     if (!sampleCells) return dataset;
@@ -122,7 +178,7 @@ export default function DatasetDetail() {
     ? undefined
     : apiDetail?.cell_types
       ? 'full dataset'
-      : dataset.cells.length < dataset.cellCount
+      : dataset && dataset.cells.length < dataset.cellCount
         ? 'from displayed cells'
         : undefined;
 
@@ -238,6 +294,10 @@ export default function DatasetDetail() {
                 viewTab === 'survival' ? 'bg-slate-800 text-slate-100' : 'text-slate-500 hover:text-slate-300')}>
                 <HeartPulse size={13} /> Survival
               </button>
+              <button onClick={() => setViewTab('clinical')} className={clsx('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                viewTab === 'clinical' ? 'bg-slate-800 text-slate-100' : 'text-slate-500 hover:text-slate-300')}>
+                <Stethoscope size={13} /> Clinical Analysis
+              </button>
             </div>
 
             {viewTab === 'spatial' && (
@@ -267,6 +327,33 @@ export default function DatasetDetail() {
                         Showing {sampleCells.length.toLocaleString()} cells from {selectedSample}
                       </span>
                     )}
+                    {/* Renderer toggle — only shown when a single sample is selected */}
+                    {selectedSample && (
+                      <div className="ml-auto flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
+                        <button
+                          onClick={() => setPlotMode('canvas')}
+                          className={clsx(
+                            'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] transition-colors',
+                            plotMode === 'canvas'
+                              ? 'bg-slate-700 text-slate-100'
+                              : 'text-slate-500 hover:text-slate-300',
+                          )}
+                        >
+                          <Monitor size={11} /> Canvas
+                        </button>
+                        <button
+                          onClick={() => setPlotMode('ggplot')}
+                          className={clsx(
+                            'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] transition-colors',
+                            plotMode === 'ggplot'
+                              ? 'bg-slate-700 text-slate-100'
+                              : 'text-slate-500 hover:text-slate-300',
+                          )}
+                        >
+                          <ScanLine size={11} /> ggplot (equal axes)
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
                 <CellTypeCountsPanel
@@ -276,14 +363,57 @@ export default function DatasetDetail() {
                   loading={!!selectedSample && sampleCellsLoading}
                   subtitle={spatialCountsSubtitle}
                 />
-                <SpatialPlot dataset={plotDataset ?? dataset} activeMarker={activeMarker} height={520} />
+                {/* Server-rendered ggplot image (coord_equal, perfect circles) */}
+                {plotMode === 'ggplot' && selectedSample ? (
+                  <div
+                    className="border border-slate-800 rounded-xl overflow-hidden bg-[#0d1117]"
+                    style={{ minHeight: 400 }}
+                  >
+                    {ggplotLoading && (
+                      <div className="flex items-center justify-center h-64 text-xs text-slate-500 gap-2">
+                        <span className="animate-spin inline-block w-3 h-3 border border-slate-500 border-t-slate-300 rounded-full" />
+                        Rendering ggplot (coord_equal)…
+                      </div>
+                    )}
+                    {ggplotError && !ggplotLoading && (
+                      <div className="flex items-center justify-center h-64 text-xs text-rose-400 gap-2 px-6 text-center">
+                        {ggplotError.includes('ggplot2')
+                          ? 'ggplot2 not installed on the API server. Run install.packages("ggplot2") and restart.'
+                          : ggplotError}
+                      </div>
+                    )}
+                    {ggplotData && !ggplotLoading && (
+                      <img
+                        src={`data:image/png;base64,${ggplotData.image_b64}`}
+                        alt={`ggplot2 cell map — ${ggplotData.sample_id}`}
+                        className="w-full h-auto"
+                        style={{ display: 'block' }}
+                      />
+                    )}
+                    {!ggplotLoading && !ggplotError && !ggplotData && (
+                      <div className="flex items-center justify-center h-32 text-xs text-slate-600">
+                        Select a sample to render
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <SpatialPlot dataset={plotDataset ?? dataset} activeMarker={activeMarker} height={520} />
+                )}
               </div>
             )}
 
             {viewTab === 'heatmap' && (
               <div className="card p-5">
-                <p className="text-xs font-semibold text-slate-300 mb-4">Mean Marker Expression per Cell Type</p>
-                <HeatmapView dataset={dataset} />
+                <p className="text-xs font-semibold text-slate-300 mb-4">
+                  {phenotypeSummary && phenotypeSummary.markers.length > 0
+                    ? 'Phenotype Positivity per Cell Type'
+                    : 'Mean Marker Expression per Cell Type'}
+                </p>
+                <HeatmapView
+                  dataset={dataset}
+                  apiSummary={phenotypeSummary}
+                  apiSummaryLoading={phenotypeSummaryLoading}
+                />
               </div>
             )}
 
@@ -299,6 +429,20 @@ export default function DatasetDetail() {
                 datasetId={dataset.id}
                 availableCellTypes={apiDetail ? Object.keys(apiDetail.cell_types) : dataset.cellTypes}
                 hasSurvival={apiDetail?.has_survival ?? false}
+                survivalColumns={apiDetail?.survival_columns ?? []}
+                tissueRegions={apiDetail?.tissue_regions ?? []}
+                apiDetailLoaded={apiDetail !== null}
+                onSurvivalAttached={refreshDetail}
+              />
+            )}
+
+            {viewTab === 'clinical' && (
+              <ClinicalAnalysisView
+                datasetId={dataset.id}
+                availableCellTypes={apiDetail ? Object.keys(apiDetail.cell_types) : dataset.cellTypes}
+                hasSurvival={apiDetail?.has_survival ?? false}
+                survivalColumns={apiDetail?.survival_columns ?? []}
+                apiDetailLoaded={apiDetail !== null}
                 onSurvivalAttached={refreshDetail}
               />
             )}

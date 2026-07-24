@@ -17,6 +17,7 @@ export interface CellPoint {
   markers: Record<string, number>;
   cluster?: number;
   region?: string;
+  sampleId?: string;
 }
 
 export interface SpatialLayer {

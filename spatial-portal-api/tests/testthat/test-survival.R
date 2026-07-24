@@ -105,3 +105,43 @@ test_that("cox_from_stat uses cluster-robust SE when patient_id repeats", {
   expect_true(res$clustered)
   expect_equal(res$n_clusters, 6L)
 })
+
+test_that("aggregate_cox_stats averages cores to patient level", {
+  per_sample <- data.frame(
+    sample_id = c("s1", "s2", "s3"),
+    patient_id = c("p1", "p1", "p2"),
+    stat = c(10, 20, 30),
+    n_focal = c(100, 200, 50),
+    tissue_area = c(1e4, 2e4, 5e3),
+    stringsAsFactors = FALSE
+  )
+  agg <- aggregate_cox_stats(per_sample, level = "patient")
+  expect_equal(nrow(agg), 2L)
+  expect_equal(agg$stat[agg$patient_id == "p1"], 15)
+  expect_equal(agg$sample_id, agg$patient_id)
+})
+
+test_that("radius_guidance warns when radius is large vs core diameter", {
+  per_sample <- data.frame(
+    sample_id = "s1",
+    stat = 1,
+    tissue_area = 10000,
+    stringsAsFactors = FALSE
+  )
+  info <- radius_guidance(per_sample, radius = 100)
+  expect_true(info$warn)
+  expect_true(nzchar(info$message %||% ""))
+})
+
+test_that("filter_cells_by_region keeps only matching tissue_category", {
+  cells <- data.table::data.table(
+    sample_id = c("a", "a", "b"),
+    patient_id = c("p1", "p1", "p2"),
+    x = c(1, 2, 3),
+    y = c(1, 2, 3),
+    cell_type = "Tumor",
+    tissue_category = c("Tumor", "Stroma", "Tumor")
+  )
+  out <- filter_cells_by_region(cells, "Tumor")
+  expect_equal(nrow(out), 2L)
+})

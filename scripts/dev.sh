@@ -4,7 +4,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_BIN="$ROOT/node-bin/node-v22.13.1-darwin-arm64/bin"
-export PATH="$NODE_BIN:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+if [[ -x "$NODE_BIN/node" ]]; then
+  export PATH="$NODE_BIN:$PATH"
+fi
 
 API_PORT="${PORT:-8000}"
 WEB_PORT="${VITE_PORT:-5173}"
@@ -48,11 +50,20 @@ wait_for_api() {
 }
 
 echo "==> Starting R API on ${API_URL}"
+if command -v lsof >/dev/null 2>&1; then
+  PIDS="$(lsof -ti ":${API_PORT}" 2>/dev/null || true)"
+  if [[ -n "${PIDS}" ]]; then
+    echo "    Stopping existing listener(s) on port ${API_PORT}..."
+    # shellcheck disable=SC2086
+    kill -9 ${PIDS} 2>/dev/null || true
+    sleep 0.5
+  fi
+fi
 cd "$ROOT/spatial-portal-api"
 export PORT="$API_PORT"
 export HOST="127.0.0.1"
-export CORS_ORIGIN="http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173"
-export ENABLE_VPD="${ENABLE_VPD:-false}"
+export CORS_ORIGIN="http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
+export ENABLE_VPD="${ENABLE_VPD:-true}"
 Rscript R/main.R &
 API_PID=$!
 
@@ -64,7 +75,7 @@ echo "    API ready · Swagger docs at ${API_URL}/__docs__/"
 
 echo "==> Starting Vite frontend on ${WEB_URL}"
 cd "$ROOT/spatial-portal"
-npm run dev -- --host 127.0.0.1 --port "$WEB_PORT" &
+npm run dev -- --host localhost --port "$WEB_PORT" &
 WEB_PID=$!
 
 echo

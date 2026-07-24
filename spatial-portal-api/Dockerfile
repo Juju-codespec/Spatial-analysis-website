@@ -3,6 +3,7 @@ FROM rocker/r-ver:4.4
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
         libcurl4-openssl-dev \
         libssl-dev \
         libxml2-dev \
@@ -15,8 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # CRAN packages: keep this single layer for cache efficiency.
 RUN R -q -e "install.packages(c( \
         'plumber', 'spatstat.geom', 'spatstat.explore', 'spatstat.random', \
-        'survival', 'dplyr', 'data.table', 'jsonlite', 'future', 'promises', \
-        'uuid', 'vroom', 'logger', 'BiocManager', 'testthat', 'httr', 'callr' \
+        'survival', 'sandwich', 'dplyr', 'data.table', 'jsonlite', 'future', 'promises', \
+        'uuid', 'vroom', 'logger', 'ggplot2', 'aod', 'glmmTMB', \
+        'BiocManager', 'testthat', 'httr', 'callr' \
     ), repos = 'https://cloud.r-project.org')"
 
 # Bioconductor packages for the VPD demo cohorts. ExperimentHub will lazily
