@@ -1,0 +1,52 @@
+# Render Blueprint — deploy SpatialBio Portal (API + static frontend).
+# https://render.com/docs/blueprint-spec
+#
+# After connecting this repo in Render Dashboard → New → Blueprint:
+# 1. Deploy the API service first; wait until /health returns ok.
+# 2. Set CORS_ORIGIN on the API to your static site URL (see DEPLOY.md).
+# 3. Set VITE_API_URL on the static site to https://<your-api-host> and redeploy.
+
+services:
+  - type: web
+    name: spatial-portal-api
+    runtime: docker
+    rootDir: spatial-portal-api
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: "8000"
+      - key: ENABLE_VPD
+        value: "true"
+      - key: DATA_CACHE
+        value: /app/data-cache
+      - key: FUTURE_PLAN
+        value: multisession
+      # Set in Render dashboard after you know the frontend URL, e.g.
+      # https://spatial-portal.onrender.com
+      - key: CORS_ORIGIN
+        sync: false
+    # Optional: add a persistent disk (paid plans) so uploads & VPD cache survive restarts.
+    # disk:
+    #   name: spatial-portal-data-cache
+    #   mountPath: /app/data-cache
+    #   sizeGB: 5
+
+  - type: web
+    name: spatial-portal
+    runtime: static
+    rootDir: spatial-portal
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    pullRequestPreviewsEnabled: true
+    envVars:
+      # Example: https://spatial-portal-api.onrender.com (no trailing slash)
+      - key: VITE_API_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
