@@ -30,6 +30,15 @@ export interface ApiDatasetDetail {
   cell_types: Record<string, number>;
   has_survival: boolean;
   survival_columns: string[];
+  tissue_regions?: string[];
+}
+
+export interface RadiusGuidance {
+  radius_px: number;
+  median_core_diameter_px: number | null;
+  radius_fraction_of_diameter: number | null;
+  warn: boolean;
+  message: string | null;
 }
 
 export interface ApiCellPoint {
@@ -172,10 +181,14 @@ export interface BivariateCoxResponse {
     covariates: string[];
     adjust_density?: boolean;
     cluster_patients: boolean;
+    analysis_level?: 'sample' | 'patient';
+    tissue_region?: string | null;
     min_focal_cells: number;
   };
-  stat_summary: Array<{ sample_id: string; stat: number; n_focal?: number; tissue_area?: number }>;
+  stat_summary: Array<{ sample_id: string; stat: number; n_focal?: number; tissue_area?: number; patient_id?: string }>;
   abund_summary: Array<{ sample_id: string; abund: number }>;
+  export_table?: Array<Record<string, string | number | null>>;
+  radius_guidance?: RadiusGuidance;
   sample_filter?: {
     min_focal_cells: number;
     n_samples_total: number;
@@ -370,6 +383,8 @@ export interface CoxResponse {
     covariates: string[];
     adjust_density?: boolean;
     cluster_patients?: boolean;
+    analysis_level?: 'sample' | 'patient';
+    tissue_region?: string | null;
     min_focal_cells?: number;
   };
   stat_summary: Array<{
@@ -377,7 +392,10 @@ export interface CoxResponse {
     stat: number;
     n_focal?: number;
     tissue_area?: number;
+    patient_id?: string;
   }>;
+  export_table?: Array<Record<string, string | number | null>>;
+  radius_guidance?: RadiusGuidance;
   sample_filter?: {
     min_focal_cells: number;
     n_samples_total: number;

@@ -410,6 +410,124 @@ resolve_cluster_vector <- function(df, cluster_id) {
   vec
 }
 
+#' Reduce survival metadata to one row per analysis unit (sample or patient).
+prepare_survival_for_level <- function(surv_df, level = c("sample", "patient")) {
+  level <- match.arg(level)
+  if (level == "sample" || nrow(surv_df) == 0L) return(surv_df)
+
+  if ("patient_id" %in% names(surv_df) && any(!is.na(surv_df$patient_id))) {
+    id_vec <- surv_df$patient_id
+  } else {
+    return(surv_df)
+  }
+
+  keep <- !duplicated(id_vec)
+  out <- surv_df[keep, , drop = FALSE]
+  out$sample_id <- as.character(id_vec[keep])
+  out
+}
+
+#' Aggregate per-sample spatial summaries to patient level (mean per axis).
+aggregate_cox_stats <- function(per_sample_stat, level = c("sample", "patient")) {
+  level <- match.arg(level)
+  if (level == "sample" || nrow(per_sample_stat) == 0L) return(per_sample_stat)
+
+  if (!"patient_id" %in% names(per_sample_stat)) {
+    per_sample_stat$patient_id <- per_sample_stat$sample_id
+  }
+  na_pid <- is.na(per_sample_stat$patient_id)
+  if (any(na_pid)) {
+    per_sample_stat$patient_id[na_pid] <- per_sample_stat$sample_id[na_pid]
+  }
+
+  numeric_cols <- intersect(c("stat", "n_focal", "tissue_area"),
+                            names(per_sample_stat))
+  if (length(numeric_cols) == 0L) {
+    stop("per_sample_stat must include a stat column.", call. = FALSE)
+  }
+
+  agg <- stats::aggregate(
+    per_sample_stat[, numeric_cols, drop = FALSE],
+    by = list(patient_id = per_sample_stat$patient_id),
+    FUN = function(x) if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
+  )
+  agg$sample_id <- agg$patient_id
+  agg[, c("sample_id", "patient_id", numeric_cols), drop = FALSE]
+}
+
+#' Aggregate per-sample abundance to patient level (mean).
+aggregate_cox_abundance <- function(abund_per_sample, per_sample_stat,
+                                    level = c("sample", "patient")) {
+  level <- match.arg(level)
+  if (level == "sample" || nrow(abund_per_sample) == 0L) return(abund_per_sample)
+
+  if (!"patient_id" %in% names(per_sample_stat)) {
+    per_sample_stat$patient_id <- per_sample_stat$sample_id
+  }
+  pid_map <- unique(per_sample_stat[, c("sample_id", "patient_id"), drop = FALSE])
+  joined <- merge(abund_per_sample, pid_map, by = "sample_id", all.x = TRUE)
+  na_pid <- is.na(joined$patient_id)
+  if (any(na_pid)) joined$patient_id[na_pid] <- joined$sample_id[na_pid]
+
+  agg <- stats::aggregate(
+    abund ~ patient_id,
+    data = joined,
+    FUN = function(x) if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
+  )
+  agg$sample_id <- agg$patient_id
+  agg[, c("sample_id", "abund"), drop = FALSE]
+}
+
+#' Warn when the chosen radius is large relative to tissue core size.
+radius_guidance <- function(per_sample_stat, radius, warn_fraction = 0.3) {
+  radius <- as.numeric(radius)
+  diameter <- NA_real_
+  if ("tissue_area" %in% names(per_sample_stat)) {
+    areas <- per_sample_stat$tissue_area[is.finite(per_sample_stat$tissue_area)]
+    if (length(areas) > 0L) {
+      diameter <- stats::median(2 * sqrt(areas / pi), na.rm = TRUE)
+    }
+  }
+  fraction <- if (is.finite(diameter) && diameter > 0) radius / diameter else NA_real_
+  warn <- isTRUE(is.finite(fraction) && fraction > warn_fraction)
+  list(
+    radius_px = radius,
+    median_core_diameter_px = diameter,
+    radius_fraction_of_diameter = fraction,
+    warn = warn,
+    message = if (warn) {
+      sprintf(
+        paste0(
+          "Radius %.0f px exceeds %.0f%% of the median core diameter ",
+          "(%.0f px). Edge effects may distort K/G — try a smaller radius."
+        ),
+        radius, warn_fraction * 100, diameter
+      )
+    } else {
+      NULL
+    }
+  )
+}
+
+#' Merge spatial summaries with survival for CSV export.
+build_cox_export_table <- function(per_sample_stat, surv_df,
+                                   abund_per_sample = NULL,
+                                   level = c("sample", "patient")) {
+  level <- match.arg(level)
+  stats_df <- aggregate_cox_stats(per_sample_stat, level = level)
+  surv_use <- prepare_survival_for_level(surv_df, level = level)
+
+  merged <- merge(stats_df, surv_use, by = "sample_id", all.x = FALSE)
+  if (!is.null(abund_per_sample) && nrow(abund_per_sample) > 0L) {
+    abund_use <- aggregate_cox_abundance(abund_per_sample, per_sample_stat,
+                                         level = level)
+    merged <- merge(merged, abund_use[, c("sample_id", "abund"), drop = FALSE],
+                    by = "sample_id", all.x = TRUE)
+  }
+  merged$analysis_level <- level
+  merged
+}
+
 #' Generate Kaplan-Meier step-function points for plotting on the frontend.
 build_km <- function(df) {
   fit <- survival::survfit(

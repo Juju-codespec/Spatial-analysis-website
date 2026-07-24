@@ -10,7 +10,9 @@ import Login from './pages/Login';
 import Compare from './pages/Compare';
 import Dashboard from './pages/Dashboard';
 import Admin from './pages/Admin';
+import Documentation from './pages/Documentation';
 import ErrorBoundary from './components/shared/ErrorBoundary';
+import ApiStatusBanner from './components/layout/ApiStatusBanner';
 import { useStore } from './store/useStore';
 
 export default function App() {
@@ -21,6 +23,7 @@ export default function App() {
     <BrowserRouter>
       <div className="min-h-screen flex flex-col bg-slate-950">
         <Header />
+        <ApiStatusBanner />
         <main className="flex-1">
           <ErrorBoundary>
             <Routes>
@@ -32,6 +35,7 @@ export default function App() {
               <Route path="/compare"     element={<Compare />} />
               <Route path="/dashboard"   element={<Dashboard />} />
               <Route path="/admin"       element={<Admin />} />
+              <Route path="/docs"        element={<Documentation />} />
               <Route path="*"            element={<Home />} />
             </Routes>
           </ErrorBoundary>

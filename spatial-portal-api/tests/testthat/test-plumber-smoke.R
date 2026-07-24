@@ -61,8 +61,8 @@ test_that("plumber service serves /health, /datasets, and analysis endpoints", {
   health <- parse_body(httr::GET(paste0(base, "/health")))
   expect_equal(health$status, "ok")
 
-  # Upload a synthetic dataset
-  cells <- make_synthetic_cells(n_per_sample = 80, n_samples = 6)
+  # Upload a synthetic dataset (12 samples so bivariate Cox has enough data)
+  cells <- make_synthetic_cells(n_per_sample = 80, n_samples = 12)
   surv <- make_synthetic_survival(unique(cells$sample_id))
   cells_path <- tempfile(fileext = ".csv")
   surv_path  <- tempfile(fileext = ".csv")
@@ -121,6 +121,22 @@ test_that("plumber service serves /health, /datasets, and analysis endpoints", {
   cox_body <- parse_body(cox_resp)
   expect_true(!is.null(cox_body$cox$primary$hr))
 
+  # Bivariate Cox
+  biv_resp <- httr::POST(paste0(base, "/analyze/cox-bivariate"),
+                         body = list(datasetId = ds_id,
+                                     statistic = "K",
+                                     radius = 30,
+                                     typeA = "CD8+ T Cell",
+                                     abundanceType = "pct",
+                                     split = "median",
+                                     minFocalCells = 1L),
+                         encode = "json")
+  expect_equal(httr::status_code(biv_resp), 200L)
+  biv_body <- parse_body(biv_resp)
+  expect_true(!is.null(biv_body$cox$primary$hr))
+  expect_equal(length(biv_body$cox$quadrants), 4L)
+  expect_true(is.finite(biv_body$cox$concordance))
+
   # Upload a second dataset WITHOUT survival, then attach it via the
   # dedicated endpoint so Cox PH becomes available after the fact.
   cells2_path <- tempfile(fileext = ".csv")
@@ -162,6 +178,30 @@ test_that("plumber service serves /health, /datasets, and analysis endpoints", {
                           encode = "json")
   expect_equal(httr::status_code(cox2_resp), 200L)
 
+  wx_resp <- httr::POST(paste0(base, "/analyze/wilcoxon"),
+                        body = list(datasetId = ds_id,
+                                    statistic = "K",
+                                    radius = 30,
+                                    typeA = "CD8+ T Cell",
+                                    groupColumn = "arm"),
+                        encode = "json")
+  expect_equal(httr::status_code(wx_resp), 200L)
+  wx_body <- parse_body(wx_resp)
+  expect_true(is.finite(wx_body$wilcoxon$p_value))
+
+  lin_resp <- httr::POST(paste0(base, "/analyze/linear"),
+                         body = list(datasetId = ds_id,
+                                     statistic = "K",
+                                     radius = 30,
+                                     typeA = "CD8+ T Cell",
+                                     outcomeColumn = "status",
+                                     covariates = list("age", "stage")),
+                         encode = "json")
+  expect_equal(httr::status_code(lin_resp), 200L)
+  lin_body <- parse_body(lin_resp)
+  expect_equal(lin_body$linear$family, "binomial")
+  expect_true(is.finite(lin_body$linear$primary$p_value))
+
   # Posting to /survival on an unknown dataset returns 404
   missing_resp <- httr::POST(
     paste0(base, "/datasets/does-not-exist/survival"),
@@ -169,6 +209,45 @@ test_that("plumber service serves /health, /datasets, and analysis endpoints", {
     encode = "multipart"
   )
   expect_equal(httr::status_code(missing_resp), 404L)
+
+  sum_resp <- httr::GET(paste0(base, "/datasets/", ds_id, "/clinical-summary?level=sample"))
+  expect_equal(httr::status_code(sum_resp), 200L)
+  sum_body <- parse_body(sum_resp)
+  expect_true(length(sum_body$clinical_columns) > 0L)
+
+  feat_resp <- httr::GET(paste0(base, "/datasets/", ds_id, "/clinical-features"))
+  expect_equal(httr::status_code(feat_resp), 200L)
+  feat_body <- parse_body(feat_resp)
+  expect_true(length(feat_body$feature_columns) > 0L)
+
+  pct_col <- feat_body$feature_columns[grepl("^pct_", feat_body$feature_columns)][1]
+
+  clin_wx <- httr::POST(
+    paste0(base, "/analyze/clinical/wilcoxon"),
+    body = list(datasetId = ds_id, featureColumn = pct_col,
+                groupColumn = "arm", level = "sample"),
+    encode = "json"
+  )
+  expect_equal(httr::status_code(clin_wx), 200L)
+
+  clin_lin <- httr::POST(
+    paste0(base, "/analyze/clinical/linear"),
+    body = list(datasetId = ds_id, outcomeColumn = "status",
+                featureColumns = list(pct_col),
+                covariates = list("age", "stage"), level = "sample"),
+    encode = "json"
+  )
+  expect_equal(httr::status_code(clin_lin), 200L)
+
+  clin_surv <- httr::POST(
+    paste0(base, "/analyze/clinical/survival"),
+    body = list(datasetId = ds_id, featureColumn = pct_col,
+                dichotomize = "median", level = "sample"),
+    encode = "json"
+  )
+  expect_equal(httr::status_code(clin_surv), 200L)
+  surv_body <- parse_body(clin_surv)
+  expect_true(is.finite(surv_body$survival$cox$primary$hr))
 
   # Posting without a survival part returns 400
   empty_resp <- httr::POST(

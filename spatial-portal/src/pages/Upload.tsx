@@ -7,8 +7,48 @@ import {
 import { useStore } from '../store/useStore';
 import type { Dataset, SpatialLayer } from '../types';
 import { parseFile, detectFormat } from '../utils/cellParser';
-import { uploadDataset, ApiError, getDataset, getCells } from '../api/client';
+import { uploadDataset, ApiError, getDataset, getCells, API_URL } from '../api/client';
 import clsx from 'clsx';
+
+function describeUploadFailure(err: unknown): { message: string; hint: string | null } {
+  const raw = err instanceof ApiError ? err.message : (err instanceof Error ? err.message : String(err));
+  const isNetwork =
+    err instanceof TypeError ||
+    /failed to fetch|load failed|networkerror/i.test(raw);
+  if (isNetwork) {
+    return {
+      message: `Could not reach the backend at ${API_URL}.`,
+      hint: 'Start both services from the repo root with npm run dev (API on :8000, frontend on :5173). If you open the app at http://127.0.0.1:5173, restart the API so CORS allows that origin. Verify with: curl -s http://127.0.0.1:8000/health',
+    };
+  }
+  if (err instanceof ApiError && err.status === 400) {
+    return {
+      message: raw,
+      hint: 'Check that your file has x/y coordinates and either phenotype_* columns or a cell_type column (CSV, TSV, or Parquet). Step 2 column names must match the file headers exactly.',
+    };
+  }
+  if (err instanceof ApiError && err.status === 413) {
+    return {
+      message: raw,
+      hint:
+        'Full VectraPolarisData RDS exports are often 400 MB+ and cannot be uploaded through the browser. ' +
+        'Use Explore → Human Lung/Ovarian Cancer (VectraPolarisData) for bundled demos, or export a cell CSV from inForm and upload that instead.',
+    };
+  }
+  if (err instanceof ApiError && err.status === 500) {
+    return {
+      message: raw,
+      hint:
+        'The R API hit an internal error while parsing or saving your file. ' +
+        'Restart with npm run api from the project root, ensure the file is CSV/TSV, Parquet, or RDS (not Excel), ' +
+        'and keep clinical/survival CSVs to one row per sample_id. If this dataset is already listed under Explore as upload-*, open it and attach clinical data there instead of re-uploading cells.',
+    };
+  }
+  return {
+    message: raw || 'Upload failed.',
+    hint: null,
+  };
+}
 
 const STEPS = [
   { id: 1, label: 'Upload Files', icon: Upload },
@@ -17,7 +57,7 @@ const STEPS = [
   { id: 4, label: 'Review & Submit', icon: Eye },
 ];
 
-const ACCEPTED_TYPES = ['.csv', '.xlsx', '.geojson', '.json', '.tsv', '.rds'];
+const ACCEPTED_TYPES = ['.csv', '.xlsx', '.geojson', '.json', '.tsv', '.rds', '.parquet'];
 // Cap how many cells we keep in memory for client-side plotting. Mirrors the
 // `downsample: 30000` used by the R API in useStore.hydrateDatasetCells so the
 // SpatialPlot canvas never has to render hundreds of thousands of points.
@@ -27,11 +67,12 @@ const SERVER_PARSE_BYTES = 2 * 1024 * 1024;
 
 function isDataFile(f: File): boolean {
   const n = f.name.toLowerCase();
-  return n.endsWith('.rds') || n.endsWith('.csv') || n.endsWith('.tsv');
+  return n.endsWith('.rds') || n.endsWith('.csv') || n.endsWith('.tsv') || n.endsWith('.parquet');
 }
 
 function isServerSideParse(f: File): boolean {
-  return f.name.toLowerCase().endsWith('.rds') || f.size > SERVER_PARSE_BYTES;
+  const n = f.name.toLowerCase();
+  return n.endsWith('.rds') || n.endsWith('.parquet') || f.size > SERVER_PARSE_BYTES;
 }
 
 function sampleEvenly<T>(arr: T[], n: number): T[] {
@@ -74,6 +115,7 @@ export default function UploadPage() {
   const [submitted, setSubmitted] = useState(false);
   const [parsedCellCount, setParsedCellCount] = useState<number>(0);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [parseErrorHint, setParseErrorHint] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [serverDatasetId, setServerDatasetId] = useState<string | null>(null);
   const [serverWarning, setServerWarning] = useState<string | null>(null);
@@ -82,20 +124,26 @@ export default function UploadPage() {
   useEffect(() => {
     const textFile = files.find(f => f.name.endsWith('.csv') || f.name.endsWith('.tsv'));
     if (!textFile) { setIsMultiPhenotype(false); setDetectedFileHeaders([]); return; }
-    textFile.text().then(text => {
+    const sniffHeaders = async () => {
       const sep = textFile.name.endsWith('.tsv') ? '\t' : ',';
-      const firstLine = text.split(/\r?\n/)[0] ?? '';
+      let firstLine = '';
+      if (isServerSideParse(textFile)) {
+        const slice = textFile.slice(0, 256 * 1024);
+        firstLine = (await slice.text()).split(/\r?\n/)[0] ?? '';
+      } else {
+        firstLine = (await textFile.text()).split(/\r?\n/)[0] ?? '';
+      }
       const headers = firstLine.split(sep).map(h => h.trim().replace(/^"|"$/g, ''));
       setDetectedFileHeaders(headers);
       const fmt = detectFormat(headers);
       setIsMultiPhenotype(fmt === 'multi-phenotype');
       if (fmt === 'multi-phenotype') {
-        // Auto-fill coordinate columns from common position column names
         const xCol = headers.find(h => /cell_x|x_centroid|x_position|centroid_x/i.test(h)) ?? colMap.x;
         const yCol = headers.find(h => /cell_y|y_centroid|y_position|centroid_y/i.test(h)) ?? colMap.y;
         setColMap(prev => ({ ...prev, x: xCol, y: yCol }));
       }
-    });
+    };
+    void sniffHeaders();
   }, [files]);
 
   if (!currentUser) {
@@ -129,7 +177,10 @@ export default function UploadPage() {
   const validateStep = (): boolean => {
     const errs: Record<string, string> = {};
     if (step === 1 && files.length === 0) errs.files = 'Please upload at least one file.';
-    if (step === 3) {
+    if (step === 1 && files.length > 0 && !files.some(isDataFile)) {
+      errs.files = 'Include a CSV, TSV, Parquet, or RDS file (Excel .xlsx is not supported for cell data).';
+    }
+    if (step === 3 || step === 4) {
       if (!meta.title.trim()) errs.title = 'Title is required.';
       if (!meta.cancerType) errs.cancerType = 'Cancer type is required.';
       if (!meta.technique) errs.technique = 'Technique is required.';
@@ -147,13 +198,14 @@ export default function UploadPage() {
 
     const markerList = meta.markers.split(',').map(m => m.trim()).filter(Boolean);
     setParseError(null);
+    setParseErrorHint(null);
 
     const dataFile = files.find(isDataFile);
     const rdsFile = files.find(f => f.name.toLowerCase().endsWith('.rds'));
     const textFile = files.find(f => f.name.endsWith('.csv') || f.name.endsWith('.tsv'));
 
     if (!dataFile) {
-      setErrors({ submit: 'Please upload a CSV, TSV, or RDS (SpatialExperiment) file.' });
+      setErrors({ submit: 'Please upload a CSV, TSV, Parquet, or RDS (SpatialExperiment) file.' });
       setSubmitting(false);
       return;
     }
@@ -168,7 +220,7 @@ export default function UploadPage() {
     let uniqueCellTypes: string[] = [];
 
     if (isServerSideParse(dataFile)) {
-      // RDS and large CSV/TSV: parse on the R backend only.
+      // RDS, Parquet, and large CSV/TSV: parse on the R backend only.
       try {
         const resp = await uploadDataset(dataFile, {
           title: meta.title || undefined,
@@ -180,7 +232,10 @@ export default function UploadPage() {
         const cellResp = await getCells(resp.id, { downsample: PLOT_CELL_CAP });
         cellCount = detail.meta.n_cells;
         sampleCount = detail.meta.sample_count;
-        uniqueCellTypes = detail.meta.cell_types ?? Object.keys(detail.cell_types);
+        const metaTypes = detail.meta.cell_types;
+        uniqueCellTypes = Array.isArray(metaTypes) && metaTypes.length > 0
+          ? metaTypes
+          : Object.keys(detail.cell_types ?? {});
         cells = cellResp.cells.map(c => ({
           x: c.x,
           y: c.y,
@@ -224,7 +279,11 @@ export default function UploadPage() {
           cells,
           layers,
           methods: meta.methods,
-          dataSource: rdsFile ? 'RDS upload (SpatialExperiment)' : currentUser!.institution,
+          dataSource: rdsFile
+            ? 'RDS upload (SpatialExperiment)'
+            : dataFile.name.toLowerCase().endsWith('.parquet')
+              ? 'Parquet upload'
+              : currentUser!.institution,
           viewCount: 0,
           downloads: 0,
         });
@@ -232,8 +291,9 @@ export default function UploadPage() {
         setSubmitted(true);
         return;
       } catch (e) {
-        const msg = e instanceof ApiError ? e.message : (e as Error).message;
-        setParseError(msg);
+        const { message, hint } = describeUploadFailure(e);
+        setParseError(message);
+        setParseErrorHint(hint);
         setSubmitting(false);
         return;
       }
@@ -249,6 +309,7 @@ export default function UploadPage() {
 
     if (parsed.error) {
       setParseError(parsed.error);
+      setParseErrorHint('Check Step 2: column names must match the headers in your file exactly (case-sensitive).');
       setSubmitting(false);
       return;
     }
@@ -393,8 +454,8 @@ export default function UploadPage() {
             <div>
               <h2 className="text-base font-semibold text-slate-200 mb-1">Upload Your Files</h2>
               <p className="text-xs text-slate-500 mb-5">
-                Accepted formats: CSV, TSV, RDS (SpatialExperiment), Excel, GeoJSON. Max 500MB per file.
-                Large files and <code className="text-brand-400">.rds</code> uploads are parsed on the server.
+                Accepted formats: CSV, TSV, Parquet, RDS (SpatialExperiment), Excel, GeoJSON. Max 500MB per file.
+                <code className="text-brand-400">.rds</code>, <code className="text-brand-400">.parquet</code>, and large files are parsed on the server (requires the R <code className="text-brand-400">arrow</code> package for Parquet).
               </p>
 
               <div
@@ -439,14 +500,17 @@ export default function UploadPage() {
           {step === 2 && (
             <div>
               <h2 className="text-base font-semibold text-slate-200 mb-1">Map Your Columns</h2>
-              {files.some(f => f.name.toLowerCase().endsWith('.rds')) ? (
+              {files.some(f => isServerSideParse(f)) ? (
                 <div className="p-4 border border-brand-700/50 bg-brand-950/30 rounded-lg text-xs text-brand-300">
-                  <p className="font-semibold mb-1">RDS detected</p>
+                  <p className="font-semibold mb-1">Server-side parsing</p>
                   <p className="text-brand-400/80">
-                    Coordinates and cell types are extracted automatically on the server from
-                    SpatialExperiment objects, portal dataset lists, or plain cell tables
-                    (<code className="text-brand-300">x</code>, <code className="text-brand-300">y</code>, <code className="text-brand-300">cell_type</code>).
-                    Continue to metadata — no column mapping needed.
+                    This file is RDS, Parquet, or large — coordinates and cell types are parsed on the R API
+                    (not in the browser). Column mapping below is optional; the server auto-detects
+                    <code className="text-brand-300"> phenotype_*</code> columns or{' '}
+                    <code className="text-brand-300">cell_type</code>. Parquet files need{' '}
+                    <code className="text-brand-300">x</code>/<code className="text-brand-300">y</code> or{' '}
+                    <code className="text-brand-300">cell_x_position</code>/<code className="text-brand-300">cell_y_position</code>.
+                    Continue to metadata.
                   </p>
                 </div>
               ) : (
@@ -647,7 +711,9 @@ export default function UploadPage() {
             <div>
               <p className="font-semibold mb-0.5">Could not parse cell data</p>
               <p className="text-rose-400/80">{parseError}</p>
-              <p className="mt-1.5 text-rose-500">Go back to Step 2 and update your column names to match the headers in your file.</p>
+              {parseErrorHint && (
+                <p className="mt-1.5 text-rose-500 leading-relaxed">{parseErrorHint}</p>
+              )}
             </div>
           </div>
         )}

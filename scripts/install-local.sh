@@ -4,15 +4,18 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_BIN="$ROOT/node-bin/node-v22.13.1-darwin-arm64/bin"
-export PATH="$NODE_BIN:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+if [[ -x "$NODE_BIN/node" ]]; then
+  export PATH="$NODE_BIN:$PATH"
+fi
 
 echo "==> Spatial Portal — local install"
 echo "    Root: $ROOT"
 echo
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "ERROR: node not found. Expected bundled binary at:"
-  echo "  $NODE_BIN/node"
+  echo "ERROR: node not found."
+  echo "  Install Node 18+ from https://nodejs.org/ or extract the bundled binary under:"
+  echo "  $NODE_BIN"
   exit 1
 fi
 echo "Node $(node -v) · npm $(npm -v)"
@@ -21,7 +24,7 @@ if ! command -v Rscript >/dev/null 2>&1; then
   echo "ERROR: Rscript not found. Install R 4.2+ from https://cran.r-project.org/"
   exit 1
 fi
-echo "R $(Rscript -e 'cat(getRversion())' 2>/dev/null)"
+echo "R $(Rscript -e 'cat(as.character(getRversion()))' 2>/dev/null)"
 
 echo
 echo "==> Installing frontend dependencies (spatial-portal/)"

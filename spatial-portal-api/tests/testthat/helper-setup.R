@@ -47,7 +47,10 @@ make_synthetic_survival <- function(sample_ids, seed = 7,
     sample_id = sample_ids,
     time      = time,
     status    = status,
+    arm       = ifelse(seq_len(n) %% 2L == 0L, "A", "B"),
     age       = rnorm(n, 65, 10),
+    stage     = sample(c("I", "II", "III", "IV"), n, replace = TRUE),
+    grade     = sample(1:3, n, replace = TRUE),
     stringsAsFactors = FALSE
   )
 }

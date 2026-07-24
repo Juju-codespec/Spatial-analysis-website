@@ -8,15 +8,17 @@ import Plot from '../../lib/plot';
 import type { Data, Layout } from 'plotly.js';
 import { useCox, useBivariateCox } from '../../hooks/useAnalysis';
 import { API_URL, ApiError, uploadSurvival } from '../../api/client';
-import { Loader2, AlertCircle, Upload, CheckCircle2, FileText, X, GitBranch, Info } from 'lucide-react';
+import { Loader2, AlertCircle, Upload, CheckCircle2, FileText, X, GitBranch, Info, Download } from 'lucide-react';
 import clsx from 'clsx';
 import { formatNum, formatRange } from '../../utils/format';
+import { downloadCsv } from '../../utils/export';
 
 interface Props {
   datasetId: string;
   availableCellTypes: string[];
   hasSurvival: boolean;
   survivalColumns?: string[];
+  tissueRegions?: string[];
   apiDetailLoaded?: boolean;
   onSurvivalAttached?: () => void;
 }
@@ -40,6 +42,7 @@ export default function SurvivalView({
   availableCellTypes,
   hasSurvival,
   survivalColumns = [],
+  tissueRegions = [],
   apiDetailLoaded = false,
   onSurvivalAttached,
 }: Props) {
@@ -62,6 +65,8 @@ export default function SurvivalView({
   );
   const [adjustDensity, setAdjustDensity] = useState(true);
   const [clusterPatients, setClusterPatients] = useState(true);
+  const [analysisLevel, setAnalysisLevel] = useState<'sample' | 'patient'>('patient');
+  const [tissueRegion, setTissueRegion] = useState('');
   const [minFocalCells, setMinFocalCells] = useState(10);
 
   useEffect(() => {
@@ -85,9 +90,11 @@ export default function SurvivalView({
     covariates,
     adjustDensity,
     clusterPatients,
+    analysisLevel,
+    tissueRegion: tissueRegion || null,
     minFocalCells,
     windowType: 'convex' as const,
-  } : null, [datasetId, statistic, radius, typeA, typeB, dichotomize, covariates, adjustDensity, clusterPatients, minFocalCells, hasSurvival]);
+  } : null, [datasetId, statistic, radius, typeA, typeB, dichotomize, covariates, adjustDensity, clusterPatients, analysisLevel, tissueRegion, minFocalCells, hasSurvival]);
 
   const { data, loading, error } = useCox(req);
 
@@ -113,7 +120,8 @@ export default function SurvivalView({
       <div>
         <p className="text-xs font-semibold text-slate-300">Cox Proportional Hazards · Spatial T-cell Clustering vs Survival</p>
         <p className="text-[11px] text-slate-500 mt-0.5">
-          Per-sample {statistic === 'K' ? 'L(r) − r' : 'G(r) − G_csr(r)'} at r = {radius} px
+          Per-{analysisLevel === 'patient' ? 'patient' : 'sample'} {statistic === 'K' ? 'L(r) − r' : 'G(r) − G_csr(r)'} at r = {radius} px
+          {tissueRegion ? <> within <strong>{tissueRegion}</strong> regions</> : null}
           {dichotomize === 'none'
             ? ' is fit continuously in '
             : dichotomize === 'trichotomize'
@@ -130,7 +138,11 @@ export default function SurvivalView({
           )}
           {adjustDensity ? ' + n_focal + log_area' : ''})
           </code>
-          {clusterPatients ? ' with cluster-robust SE by patient when available.' : '.'}
+          {analysisLevel === 'patient'
+            ? ' · spatial stats averaged across cores per patient.'
+            : clusterPatients
+              ? ' with cluster-robust SE by patient when available.'
+              : '.'}
         </p>
       </div>
 
@@ -157,7 +169,7 @@ export default function SurvivalView({
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-8 gap-3 text-xs">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-10 gap-3 text-xs">
         <label>
           <span className="text-slate-400 mb-1 block">Statistic</span>
           <select
@@ -226,11 +238,38 @@ export default function SurvivalView({
           </select>
         </label>
         <label>
+          <span className="text-slate-400 mb-1 block">Analysis unit</span>
+          <select
+            className="input text-xs"
+            value={analysisLevel}
+            onChange={e => setAnalysisLevel(e.target.value as 'sample' | 'patient')}
+          >
+            <option value="patient">Patient (mean across cores)</option>
+            <option value="sample">Sample / core</option>
+          </select>
+        </label>
+        {tissueRegions.length > 0 && (
+          <label>
+            <span className="text-slate-400 mb-1 block">Tissue region</span>
+            <select
+              className="input text-xs"
+              value={tissueRegion}
+              onChange={e => setTissueRegion(e.target.value)}
+            >
+              <option value="">All regions</option>
+              {tissueRegions.map(region => (
+                <option key={region} value={region}>{region}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label>
           <span className="text-slate-400 mb-1 block">Patient clustering</span>
           <select
             className="input text-xs"
             value={clusterPatients ? 'yes' : 'no'}
             onChange={e => setClusterPatients(e.target.value === 'yes')}
+            disabled={analysisLevel === 'patient'}
           >
             <option value="yes">Cluster-robust SE</option>
             <option value="no">Standard SE</option>
@@ -252,14 +291,39 @@ export default function SurvivalView({
 
       {data && (
         <>
+          {data.radius_guidance?.warn && data.radius_guidance.message && (
+            <p className="text-[11px] text-amber-300 bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-2 flex items-start gap-2">
+              <AlertCircle size={13} className="text-amber-400 shrink-0 mt-0.5" />
+              <span>{data.radius_guidance.message}</span>
+            </p>
+          )}
           {data.sample_filter && data.sample_filter.n_samples_excluded > 0 && (
             <p className="text-[11px] text-amber-300 bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-2">
               {data.sample_filter.n_samples_excluded} sample{data.sample_filter.n_samples_excluded === 1 ? '' : 's'} excluded
               (fewer than {data.sample_filter.min_focal_cells} {typeA} cells).
-              Cox model uses {data.sample_filter.n_samples_analyzed} sample{data.sample_filter.n_samples_analyzed === 1 ? '' : 's'}.
+              Spatial stats computed on {data.sample_filter.n_samples_analyzed} sample{data.sample_filter.n_samples_analyzed === 1 ? '' : 's'}.
             </p>
           )}
-          <CoxSummaryTable data={data.cox} />
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1">
+              <CoxSummaryTable
+                data={data.cox}
+                analysisLevel={data.request.analysis_level ?? analysisLevel}
+              />
+            </div>
+            {data.export_table && data.export_table.length > 0 && (
+              <button
+                type="button"
+                onClick={() => downloadCsv(
+                  data.export_table!,
+                  `cox-${datasetId}-${analysisLevel}.csv`,
+                )}
+                className="btn-secondary text-xs shrink-0 flex items-center gap-1.5"
+              >
+                <Download size={12} /> Export CSV
+              </button>
+            )}
+          </div>
           {data.cox.formula && (
             <p className="text-[10px] text-slate-500 font-mono break-all">
               {data.cox.formula}
@@ -280,6 +344,8 @@ export default function SurvivalView({
       radius={radius}
       adjustDensity={adjustDensity}
       clusterPatients={clusterPatients}
+      analysisLevel={analysisLevel}
+      tissueRegion={tissueRegion || null}
       minFocalCells={minFocalCells}
       hasSurvival={hasSurvival}
       />
@@ -313,6 +379,8 @@ function BivariateSurvivalPanel({
   radius,
   adjustDensity,
   clusterPatients,
+  analysisLevel,
+  tissueRegion,
   minFocalCells,
   hasSurvival,
 }: {
@@ -323,6 +391,8 @@ function BivariateSurvivalPanel({
   radius: number;
   adjustDensity: boolean;
   clusterPatients: boolean;
+  analysisLevel: 'sample' | 'patient';
+  tissueRegion: string | null;
   minFocalCells: number;
   hasSurvival: boolean;
 }) {
@@ -340,9 +410,11 @@ function BivariateSurvivalPanel({
     split,
     adjustDensity: localAdjustDensity,
     clusterPatients,
+    analysisLevel,
+    tissueRegion,
     minFocalCells,
     windowType: 'convex' as const,
-  } : null, [datasetId, statistic, typeA, typeB, radius, abundanceType, split, localAdjustDensity, clusterPatients, minFocalCells, hasSurvival]);
+  } : null, [datasetId, statistic, typeA, typeB, radius, abundanceType, split, localAdjustDensity, clusterPatients, analysisLevel, tissueRegion, minFocalCells, hasSurvival]);
 
   const { data, loading, error } = useBivariateCox(req);
 
@@ -423,6 +495,13 @@ function BivariateSurvivalPanel({
 
         return (
           <div className="space-y-4">
+            {data.radius_guidance?.warn && data.radius_guidance.message && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-700/50 bg-amber-950/30 px-3 py-2.5 text-xs text-amber-300">
+                <AlertCircle size={13} className="text-amber-400 shrink-0 mt-0.5" />
+                <span>{data.radius_guidance.message}</span>
+              </div>
+            )}
+
             {/* Quadrant guide */}
             <QuadrantGuide />
 
@@ -481,12 +560,30 @@ function BivariateSurvivalPanel({
             </div>
 
             {/* HR table for the 3 non-reference contrasts */}
-            <BivariateHRTable data={data.cox} refEmpty={refEmpty} />
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1">
+                <BivariateHRTable data={data.cox} refEmpty={refEmpty} />
+              </div>
+              {data.export_table && data.export_table.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => downloadCsv(
+                    data.export_table!,
+                    `bivariate-cox-${datasetId}-${analysisLevel}.csv`,
+                  )}
+                  className="btn-secondary text-xs shrink-0 flex items-center gap-1.5"
+                >
+                  <Download size={12} /> Export CSV
+                </button>
+              )}
+            </div>
 
             {/* Summary metrics */}
             <div className="grid grid-cols-3 gap-3 text-xs">
               <div className="bg-slate-900/60 border border-slate-800 rounded-lg px-3 py-2">
-                <p className="text-[10px] uppercase tracking-widest text-slate-500">N samples</p>
+                <p className="text-[10px] uppercase tracking-widest text-slate-500">
+                  N {analysisLevel === 'patient' ? 'patients' : 'samples'}
+                </p>
                 <p className="text-base font-semibold text-slate-200">{data.cox.n}</p>
               </div>
               <div className="bg-slate-900/60 border border-slate-800 rounded-lg px-3 py-2">
@@ -765,65 +862,17 @@ function medianSurvival(key: string, data: import('../../api/types').CoxKM): num
   return Infinity + (data.surv[indices[indices.length - 1]] ?? 0);
 }
 
-function BivariateKMPlot({ data }: { data: import('../../api/types').CoxKM }) {
-  // Sort quadrant keys best → worst by actual median survival in this dataset.
-  const sortedKeys = [...ALL_QUADRANT_KEYS].sort(
-    (a, b) => medianSurvival(b, data) - medianSurvival(a, data),
-  );
-
-  const traces: Data[] = sortedKeys.map(g => {
-    const indices = data.group
-      .map((gn, idx) => (gn === g ? idx : -1))
-      .filter(idx => idx >= 0);
-
-    if (indices.length === 0) {
-      return {
-        type: 'scatter' as const,
-        mode: 'lines' as const,
-        name: `${BIVARIATE_LABELS[g] ?? g} (no data)`,
-        x: [0, 1],
-        y: [1, 1],
-        line: { width: 1, shape: 'hv' as const, color: BIVARIATE_COLORS[g] ?? '#94a3b8', dash: 'dot' as const },
-        opacity: 0.35,
-      };
-    }
-
-    return {
-      type: 'scatter' as const,
-      mode: 'lines' as const,
-      name: BIVARIATE_LABELS[g] ?? g,
-      x: indices.map(i => data.time[i]),
-      y: indices.map(i => data.surv[i]),
-      line: { width: 2, shape: 'hv' as const, color: BIVARIATE_COLORS[g] ?? '#94a3b8' },
-    };
-  });
-
-  const layout: Partial<Layout> = {
-    title: { text: 'Clustering × Abundance — Kaplan-Meier', font: { size: 12, color: '#cbd5e1' } },
-    height: 340,
-    margin: { l: 50, r: 20, t: 30, b: 40 },
-    paper_bgcolor: 'rgba(0,0,0,0)',
-    plot_bgcolor: 'rgba(15,23,42,0.4)',
-    font: { color: '#94a3b8', size: 10 },
-    xaxis: { title: { text: 'Time' }, gridcolor: '#1e293b' },
-    yaxis: { title: { text: 'Survival probability' }, gridcolor: '#1e293b', range: [0, 1.05] },
-    legend: { font: { color: '#cbd5e1', size: 10 } },
-  };
-
-  return (
-    <Plot
-      data={traces}
-      layout={layout}
-      style={{ width: '100%' }}
-      config={{ displayModeBar: false }}
-    />
-  );
-}
-
-function CoxSummaryTable({ data }: { data: import('../../api/types').CoxResult }) {
+function CoxSummaryTable({
+  data,
+  analysisLevel = 'sample',
+}: {
+  data: import('../../api/types').CoxResult;
+  analysisLevel?: 'sample' | 'patient';
+}) {
+  const unitLabel = analysisLevel === 'patient' ? 'patients' : 'samples';
   return (
     <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-xs">
-      <Metric label="N samples" value={data.n.toString()} />
+      <Metric label={`N ${unitLabel}`} value={data.n.toString()} />
       <Metric label="Events" value={data.n_events.toString()} />
       <Metric
         label="Hazard ratio"
@@ -1145,6 +1194,61 @@ function UploadErrorPanel({ error }: { error: UploadError }) {
 }
 
 const KM_COLORS = ['#3b82f6', '#f97316', '#a855f7', '#10b981'];
+
+function BivariateKMPlot({ data }: { data: import('../../api/types').CoxKM }) {
+  // Sort quadrant keys best → worst by actual median survival in this dataset.
+  const sortedKeys = [...ALL_QUADRANT_KEYS].sort(
+    (a, b) => medianSurvival(b, data) - medianSurvival(a, data),
+  );
+
+  const traces: Data[] = sortedKeys.map(g => {
+    const indices = data.group
+      .map((gn, idx) => (gn === g ? idx : -1))
+      .filter(idx => idx >= 0);
+
+    if (indices.length === 0) {
+      return {
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: `${BIVARIATE_LABELS[g] ?? g} (no data)`,
+        x: [0, 1],
+        y: [1, 1],
+        line: { width: 1, shape: 'hv' as const, color: BIVARIATE_COLORS[g] ?? '#94a3b8', dash: 'dot' as const },
+        opacity: 0.35,
+      };
+    }
+
+    return {
+      type: 'scatter' as const,
+      mode: 'lines' as const,
+      name: BIVARIATE_LABELS[g] ?? g,
+      x: indices.map(i => data.time[i]),
+      y: indices.map(i => data.surv[i]),
+      line: { width: 2, shape: 'hv' as const, color: BIVARIATE_COLORS[g] ?? '#94a3b8' },
+    };
+  });
+
+  const layout: Partial<Layout> = {
+    title: { text: 'Clustering × Abundance — Kaplan-Meier', font: { size: 12, color: '#cbd5e1' } },
+    height: 340,
+    margin: { l: 50, r: 20, t: 30, b: 40 },
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(15,23,42,0.4)',
+    font: { color: '#94a3b8', size: 10 },
+    xaxis: { title: { text: 'Time' }, gridcolor: '#1e293b' },
+    yaxis: { title: { text: 'Survival probability' }, gridcolor: '#1e293b', range: [0, 1.05] },
+    legend: { font: { color: '#cbd5e1', size: 10 } },
+  };
+
+  return (
+    <Plot
+      data={traces}
+      layout={layout}
+      style={{ width: '100%' }}
+      config={{ displayModeBar: false }}
+    />
+  );
+}
 
 function KMPlot({ data }: { data: import('../../api/types').CoxKM }) {
   const groups = Array.from(new Set(data.group));

@@ -54,7 +54,8 @@ function(id, res) {
     samples     = ds$samples,
     cell_types  = cell_type_counts(ds$cells),
     has_survival = !is.null(ds$survival) && nrow(ds$survival) > 0L,
-    survival_columns = if (!is.null(ds$survival)) names(ds$survival) else character()
+    survival_columns = if (!is.null(ds$survival)) names(ds$survival) else character(),
+    tissue_regions = tissue_region_choices(ds$cells)
   )
 }
 
@@ -549,16 +550,29 @@ function(req, res) {
   cluster_patients <- !isFALSE(body$clusterPatients %||% body$cluster_patients)
   min_focal_cells <- as.integer(body$minFocalCells %||% body$min_focal_cells %||% 10L)
   if (min_focal_cells < 1L) min_focal_cells <- 1L
+  analysis_level <- body$analysisLevel %||% body$analysis_level %||% "patient"
+  if (!analysis_level %in% c("sample", "patient")) analysis_level <- "patient"
+  tissue_region <- body$tissueRegion %||% body$tissue_region
+  if (identical(tissue_region, "")) tissue_region <- NULL
   nsim_cox <- 0L
+
+  cells_use <- tryCatch(
+    filter_cells_by_region(ds$cells, tissue_region),
+    error = function(e) {
+      res$status <- 400L
+      return(list(error = "tissue_filter_failed", message = conditionMessage(e)))
+    }
+  )
+  if (is.list(cells_use) && !is.null(cells_use$error)) return(cells_use)
 
   r_grid <- seq(0, max(2 * radius, 10), length.out = 80L)
   spatial_res <- if (statistic == "K") {
-    ripleys_k(ds$cells, type_a = type_a, type_b = type_b, r = r_grid,
+    ripleys_k(cells_use, type_a = type_a, type_b = type_b, r = r_grid,
               correction = correction, max_cells = cfg()$max_cells_per_sample,
               window_type = window_type, nsim = nsim_cox,
               min_focal_cells = min_focal_cells)
   } else {
-    nn_g(ds$cells, type_a = type_a, type_b = type_b, r = r_grid,
+    nn_g(cells_use, type_a = type_a, type_b = type_b, r = r_grid,
          correction = correction, max_cells = cfg()$max_cells_per_sample,
          window_type = window_type, nsim = nsim_cox,
          min_focal_cells = min_focal_cells)
@@ -598,12 +612,17 @@ function(req, res) {
   }
 
   cluster_id <- NULL
-  if (cluster_patients && "patient_id" %in% names(per_sample_stat)) {
+  if (analysis_level == "sample" && cluster_patients &&
+      "patient_id" %in% names(per_sample_stat)) {
     cluster_id <- "patient_id"
   }
 
+  per_sample_stat_fit <- aggregate_cox_stats(per_sample_stat, level = analysis_level)
+  surv_for_cox <- prepare_survival_for_level(ds$survival, level = analysis_level)
+  radius_info <- radius_guidance(per_sample_stat, radius)
+
   cox <- tryCatch(
-    cox_from_stat(per_sample_stat, ds$survival,
+    cox_from_stat(per_sample_stat_fit, surv_for_cox,
                   covariates = covariates,
                   dichotomize = dichotomize,
                   adjust_density = adjust_density,
@@ -623,8 +642,13 @@ function(req, res) {
                       covariates = covariates,
                       adjust_density = adjust_density,
                       cluster_patients = cluster_patients,
+                      analysis_level = analysis_level,
+                      tissue_region = tissue_region,
                       min_focal_cells = min_focal_cells),
     stat_summary = per_sample_stat,
+    export_table = build_cox_export_table(per_sample_stat, ds$survival,
+                                          level = analysis_level),
+    radius_guidance = radius_info,
     sample_filter = list(
       min_focal_cells = min_focal_cells,
       n_samples_total = spatial_res$n_samples_total,
@@ -676,16 +700,29 @@ function(req, res) {
   adjust_density   <- isTRUE(body$adjustDensity %||% body$adjust_density)
   min_focal_cells  <- as.integer(body$minFocalCells %||% body$min_focal_cells %||% 10L)
   if (min_focal_cells < 1L) min_focal_cells <- 1L
+  analysis_level <- body$analysisLevel %||% body$analysis_level %||% "patient"
+  if (!analysis_level %in% c("sample", "patient")) analysis_level <- "patient"
+  tissue_region <- body$tissueRegion %||% body$tissue_region
+  if (identical(tissue_region, "")) tissue_region <- NULL
+
+  cells_use <- tryCatch(
+    filter_cells_by_region(ds$cells, tissue_region),
+    error = function(e) {
+      res$status <- 400L
+      return(list(error = "tissue_filter_failed", message = conditionMessage(e)))
+    }
+  )
+  if (is.list(cells_use) && !is.null(cells_use$error)) return(cells_use)
 
   # Compute per-sample spatial clustering statistic.
   r_grid <- seq(0, max(2 * radius, 10), length.out = 80L)
   spatial_res <- if (statistic == "K") {
-    ripleys_k(ds$cells, type_a = type_a, type_b = type_b, r = r_grid,
+    ripleys_k(cells_use, type_a = type_a, type_b = type_b, r = r_grid,
               correction = correction, max_cells = cfg()$max_cells_per_sample,
               window_type = window_type, nsim = 0L,
               min_focal_cells = min_focal_cells)
   } else {
-    nn_g(ds$cells, type_a = type_a, type_b = type_b, r = r_grid,
+    nn_g(cells_use, type_a = type_a, type_b = type_b, r = r_grid,
          correction = correction, max_cells = cfg()$max_cells_per_sample,
          window_type = window_type, nsim = 0L,
          min_focal_cells = min_focal_cells)
@@ -711,7 +748,7 @@ function(req, res) {
   }
 
   # Compute per-sample abundance from cell counts.
-  feats <- aggregate_cell_features(ds$cells, level = "sample")
+  feats <- aggregate_cell_features(cells_use, level = "sample")
   type_a_key <- sanitize_feature_name(type_a)
   abund_col <- if (abundance_type == "count") {
     paste0("count_", type_a_key)
@@ -735,12 +772,20 @@ function(req, res) {
   )
 
   cluster_id <- NULL
-  if (cluster_patients && "patient_id" %in% names(per_sample_stat)) {
+  if (analysis_level == "sample" && cluster_patients &&
+      "patient_id" %in% names(per_sample_stat)) {
     cluster_id <- "patient_id"
   }
 
+  per_sample_stat_fit <- aggregate_cox_stats(per_sample_stat, level = analysis_level)
+  abund_per_sample_fit <- aggregate_cox_abundance(
+    abund_per_sample, per_sample_stat, level = analysis_level
+  )
+  surv_for_cox <- prepare_survival_for_level(ds$survival, level = analysis_level)
+  radius_info <- radius_guidance(per_sample_stat, radius)
+
   cox <- tryCatch(
-    cox_bivariate(per_sample_stat, abund_per_sample, ds$survival,
+    cox_bivariate(per_sample_stat_fit, abund_per_sample_fit, surv_for_cox,
                   split      = split,
                   covariates = covariates,
                   cluster_id = cluster_id,
@@ -766,10 +811,18 @@ function(req, res) {
       covariates      = covariates,
       adjust_density  = adjust_density,
       cluster_patients = cluster_patients,
+      analysis_level  = analysis_level,
+      tissue_region   = tissue_region,
       min_focal_cells  = min_focal_cells
     ),
     stat_summary = per_sample_stat,
     abund_summary = abund_per_sample,
+    export_table = build_cox_export_table(
+      per_sample_stat, ds$survival,
+      abund_per_sample = abund_per_sample,
+      level = analysis_level
+    ),
+    radius_guidance = radius_info,
     sample_filter = list(
       min_focal_cells    = min_focal_cells,
       n_samples_total    = spatial_res$n_samples_total,

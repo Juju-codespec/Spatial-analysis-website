@@ -29,7 +29,8 @@ source_all <- function() {
   root <- here_root_guess()
   Sys.setenv(PROJECT_ROOT = root)
   files <- c("config.R", "cors.R", "storage.R", "cells.R",
-             "spatial.R", "survival.R", "jobs.R")
+             "spatial.R", "survival.R", "wilcoxon.R", "linear.R",
+             "clinical.R", "plots.R", "jobs.R")
   for (f in files) source(file.path(root, "R", f), local = FALSE)
 }
 

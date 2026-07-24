@@ -207,6 +207,8 @@ export interface CoxRequest {
   covariates?: string[];
   adjustDensity?: boolean;
   clusterPatients?: boolean;
+  analysisLevel?: 'sample' | 'patient';
+  tissueRegion?: string | null;
   minFocalCells?: number;
 }
 
@@ -229,6 +231,8 @@ export interface BivariateCoxRequest {
   covariates?: string[];
   adjustDensity?: boolean;
   clusterPatients?: boolean;
+  analysisLevel?: 'sample' | 'patient';
+  tissueRegion?: string | null;
   minFocalCells?: number;
 }
 

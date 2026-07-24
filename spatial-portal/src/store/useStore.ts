@@ -3,6 +3,21 @@ import type { User, Dataset, FilterState, CellPoint, SpatialLayer } from '../typ
 import { MOCK_USERS, MOCK_DATASETS } from '../data/mockData';
 import { getDatasets, getCells, getDataset, deleteDataset as apiDeleteDataset, ApiError } from '../api/client';
 import type { ApiDatasetMeta } from '../api/types';
+import { loadDatasetCache, saveDatasetCache } from '../utils/datasetCache';
+
+function mergeMocksWithDatasets(extra: Dataset[]): Dataset[] {
+  const mockIds = new Set(MOCK_DATASETS.map(d => d.id));
+  const extraNonMock = extra.filter(d => !mockIds.has(d.id));
+  const extraIds = new Set(extraNonMock.map(d => d.id));
+  const mockKept = MOCK_DATASETS.filter(d => !extraIds.has(d.id));
+  return [...extraNonMock, ...mockKept];
+}
+
+function getInitialDatasets(): Dataset[] {
+  const cached = loadDatasetCache();
+  if (cached.length === 0) return MOCK_DATASETS;
+  return mergeMocksWithDatasets(cached);
+}
 
 interface AppState {
   currentUser: User | null;
@@ -68,7 +83,7 @@ const FALLBACK_COLORS = ['#ef4444','#3b82f6','#8b5cf6','#f59e0b','#10b981','#06b
 
 export const useStore = create<AppState>((set, get) => ({
   currentUser: null,
-  datasets: MOCK_DATASETS,
+  datasets: getInitialDatasets(),
   filters: DEFAULT_FILTERS,
   compareIds: [],
   apiStatus: 'idle',
@@ -103,7 +118,11 @@ export const useStore = create<AppState>((set, get) => ({
     ),
   })),
 
-  addDataset: (dataset) => set(s => ({ datasets: [...s.datasets, dataset] })),
+  addDataset: (dataset) => set(s => {
+    const datasets = [...s.datasets, dataset];
+    saveDatasetCache(datasets);
+    return { datasets };
+  }),
 
   removeDataset: async (id) => {
     // Drop from compare list and the dataset list first so the UI feels
@@ -113,6 +132,7 @@ export const useStore = create<AppState>((set, get) => ({
       datasets:   s.datasets.filter(d => d.id !== id),
       compareIds: s.compareIds.filter(c => c !== id),
     }));
+    saveDatasetCache(get().datasets);
     try {
       await apiDeleteDataset(id);
     } catch (e) {
@@ -155,13 +175,29 @@ export const useStore = create<AppState>((set, get) => ({
       // (e.g. API was offline at upload time) so the user can still see and
       // delete them.
       const localKept = prev.filter(d => !apiIds.has(d.id) && !mockIds.has(d.id));
+      const merged = [...enriched, ...localKept, ...mockKept];
+      saveDatasetCache(merged);
       set({
-        datasets: [...enriched, ...localKept, ...mockKept],
+        datasets: merged,
         apiStatus: 'online',
         apiError: null,
       });
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : (e as Error).message;
+      const prev = get().datasets;
+      const mockIds = new Set(MOCK_DATASETS.map(d => d.id));
+      const hasOnlyMocks = prev.length > 0 && prev.every(d => mockIds.has(d.id));
+      if (hasOnlyMocks) {
+        const cached = loadDatasetCache();
+        if (cached.length > 0) {
+          set({
+            datasets: mergeMocksWithDatasets(cached),
+            apiStatus: 'offline',
+            apiError: msg,
+          });
+          return;
+        }
+      }
       set({ apiStatus: 'offline', apiError: msg });
     }
   },

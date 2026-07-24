@@ -26,7 +26,21 @@ T_CELL_TYPES <- c("T Cell", "CD4+ T Cell", "CD8+ T Cell")
 load_vpd_dataset <- function(id) {
   stopifnot(id %in% c("vpd-lung", "vpd-ovarian"))
 
-  if (file.exists(dataset_path(id))) return(readRDS(dataset_path(id)))
+  if (file.exists(dataset_path(id))) {
+    ds <- load_dataset(id)
+    changed <- FALSE
+    if (id == "vpd-ovarian" && "sex" %in% names(ds$survival)) {
+      ds$survival$sex <- NULL
+      changed <- TRUE
+    }
+    enriched <- enrich_vpd_clinical(ds$survival, id)
+    if (!identical(enriched, ds$survival)) {
+      ds$survival <- enriched
+      changed <- TRUE
+    }
+    if (changed) save_dataset(ds)
+    return(ds)
+  }
 
   if (!requireNamespace("VectraPolarisData", quietly = TRUE)) {
     stop(
@@ -40,8 +54,12 @@ load_vpd_dataset <- function(id) {
   }
 
   hub_name <- if (id == "vpd-lung") "HumanLungCancerV3" else "HumanOvarianCancerVP"
-  message(sprintf("Loading VectraPolarisData::%s ...", hub_name))
-  se <- VectraPolarisData::VectraPolarisData()[[hub_name]]
+  message(sprintf("Loading VectraPolarisData::%s() ...", hub_name))
+  se <- if (id == "vpd-lung") {
+    VectraPolarisData::HumanLungCancerV3()
+  } else {
+    VectraPolarisData::HumanOvarianCancerVP()
+  }
 
   ds <- spe_to_dataset(se, id = id, title = vpd_meta_stub(id)$title,
                        cancer_type = vpd_meta_stub(id)$cancer_type,
@@ -74,6 +92,9 @@ spe_to_dataset <- function(se, id, title, cancer_type, tissue) {
   pheno_df <- cd[, phen_cols, drop = FALSE]
   cell_type <- derive_cell_type(pheno_df)
 
+  tissue_col <- pick_col_name(cd, c("tissue_category", "tissue.region",
+                                    "tissue_region"))
+
   cells <- data.table::data.table(
     sample_id  = as.character(sample_id),
     patient_id = as.character(patient_id),
@@ -81,6 +102,9 @@ spe_to_dataset <- function(se, id, title, cancer_type, tissue) {
     y          = as.numeric(y),
     cell_type  = cell_type
   )
+  if (!is.null(tissue_col)) {
+    cells$tissue_category <- as.character(cd[[tissue_col]])
+  }
 
   # Preserve raw phenotype booleans (0/1) for downstream filtering.
   for (col in phen_cols) {
@@ -92,7 +116,7 @@ spe_to_dataset <- function(se, id, title, cancer_type, tissue) {
 
   samples <- build_sample_summary(cells)
 
-  surv <- extract_vpd_survival(se, samples)
+  surv <- enrich_vpd_clinical(extract_vpd_survival(se, samples), id)
 
   list(
     meta = list(
@@ -110,6 +134,184 @@ spe_to_dataset <- function(se, id, title, cancer_type, tissue) {
     cells    = cells,
     survival = surv
   )
+}
+
+#' Enrich bundled VPD clinical metadata (aliases, optional supplements).
+#'
+#' Lung cohorts ship `gender` (M/F), mapped to `sex`. Ovarian metadata has no
+#' sex field. Race is not in VectraPolarisData but can be merged from
+#' `inst/extdata/vpd_ovarian_race.csv` or `VPD_OVARIAN_RACE_CSV`.
+enrich_vpd_clinical <- function(surv, id = NULL) {
+  if (is.null(surv) || nrow(surv) == 0L) {
+    return(surv)
+  }
+  if (!"sex" %in% names(surv) && "gender" %in% names(surv)) {
+    surv$sex <- as.character(surv$gender)
+  }
+  if (!"race" %in% names(surv) && "ethnicity" %in% names(surv)) {
+    surv$race <- as.character(surv$ethnicity)
+  }
+  if (!is.null(id) && id == "vpd-ovarian" && !"race" %in% names(surv)) {
+    surv <- merge_ovarian_race_from_sources(surv)
+  }
+  surv
+}
+
+#' Merge race/ethnicity into ovarian VPD survival from optional local sources.
+merge_ovarian_race_from_sources <- function(surv) {
+  sup_path <- vpd_ovarian_race_supplement_path()
+  if (nzchar(sup_path) && file.exists(sup_path)) {
+    return(merge_clinical_supplement(surv, sup_path, columns = "race"))
+  }
+  for (path in ovarian_clinical_source_paths()) {
+    if (!file.exists(path)) next
+    merged <- merge_ovarian_race_from_clinical_file(surv, path)
+    if ("race" %in% names(merged)) {
+      return(merged)
+    }
+  }
+  surv
+}
+
+ovarian_clinical_source_paths <- function() {
+  root <- here_root()
+  c(
+    file.path(root, "data", "ovarian", "Ovarian_clinical.csv"),
+    file.path(root, "inst", "extdata", "Ovarian_clinical.csv")
+  )
+}
+
+#' Extract race from the full Ovarian_clinical.csv used to build VectraPolarisData.
+merge_ovarian_race_from_clinical_file <- function(surv, path) {
+  if (is.null(surv) || nrow(surv) == 0L || !"sample_id" %in% names(surv)) {
+    return(surv)
+  }
+  raw <- utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+  if (nrow(raw) == 0L) {
+    return(surv)
+  }
+  names(raw) <- gsub("[^a-z0-9_]+", "_", tolower(names(raw)))
+  names(raw) <- gsub("_+", "_", names(raw))
+  names(raw) <- gsub("^_|_$", "", names(raw))
+
+  race_col <- pick_col_name(raw, c("race", "ethnicity", "race_ethnicity",
+                                   "race_ethnic_group"))
+  sample_col <- pick_col_name(raw, c("sample_name", "sample_id"))
+  if (is.null(race_col) || is.null(sample_col)) {
+    return(surv)
+  }
+
+  sid <- as.character(raw[[sample_col]])
+  sid <- ifelse(is.na(sid), NA_character_,
+                paste0("030120 P9HuP6 TMA 1-", sid))
+  lookup <- stats::setNames(as.character(raw[[race_col]]), sid)
+  vals <- lookup[surv$sample_id]
+  if (all(is.na(vals))) {
+    return(surv)
+  }
+  surv$race <- vals
+  surv
+}
+
+#' Path to optional ovarian race supplement (sample_id + race).
+vpd_ovarian_race_supplement_path <- function() {
+  cfg <- cfg()
+  if (nzchar(cfg$vpd_ovarian_race_csv)) {
+    return(cfg$vpd_ovarian_race_csv)
+  }
+  file.path(here_root(), "inst", "extdata", "vpd_ovarian_race.csv")
+}
+
+#' Merge extra clinical columns from a CSV onto survival rows by sample_id.
+merge_clinical_supplement <- function(surv, path, columns = NULL) {
+  if (is.null(surv) || nrow(surv) == 0L || !file.exists(path)) {
+    return(surv)
+  }
+  sup <- utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+  names(sup) <- tolower(names(sup))
+  id_col <- pick_col_name(sup, c("sample_id", "patient_id", "slide_id"))
+  if (is.null(id_col)) {
+    return(surv)
+  }
+  sup[[id_col]] <- as.character(sup[[id_col]])
+  if (!is.null(columns)) {
+    columns <- tolower(as.character(columns))
+    keep <- intersect(columns, names(sup))
+    if (length(keep) == 0L && "race" %in% columns) {
+      keep <- intersect(c("race", "ethnicity", "race_ethnicity"), names(sup))
+      if (length(keep) > 0L && !"race" %in% names(sup)) {
+        sup$race <- sup[[keep[[1L]]]]
+        keep <- "race"
+      }
+    }
+    if (length(keep) == 0L) {
+      return(surv)
+    }
+    sup <- sup[, c(id_col, keep), drop = FALSE]
+  } else {
+    sup <- sup[, setdiff(names(sup), id_col), drop = FALSE]
+    sup <- cbind(data.frame(sample_id = sup[[id_col]]), sup)
+    names(sup)[1L] <- "sample_id"
+    sup[[id_col]] <- NULL
+    id_col <- "sample_id"
+  }
+  if (!"sample_id" %in% names(surv)) {
+    return(surv)
+  }
+  merge_cols <- setdiff(names(sup), id_col)
+  if (length(merge_cols) == 0L) {
+    return(surv)
+  }
+  idx <- match(surv$sample_id, sup[[id_col]])
+  for (col in merge_cols) {
+    vals <- sup[[col]][idx]
+    if (col %in% names(surv)) {
+      fill <- is.na(surv[[col]]) | surv[[col]] == ""
+      surv[[col]][fill] <- vals[fill]
+    } else {
+      surv[[col]] <- vals
+    }
+  }
+  surv
+}
+
+#' Merge uploaded clinical rows into an existing survival table.
+#'
+#' When the upload omits `time`/`status`, treat it as a column supplement keyed
+#' on `sample_id` (or `patient_id`). Full survival uploads replace the table.
+merge_survival_clinical <- function(existing, incoming) {
+  if (is.null(existing) || nrow(existing) == 0L) {
+    return(incoming)
+  }
+  if (is.null(incoming) || nrow(incoming) == 0L) {
+    return(existing)
+  }
+  is_full <- all(c("time", "status") %in% names(incoming))
+  if (is_full) {
+    return(incoming)
+  }
+  key <- if ("sample_id" %in% names(incoming)) {
+    "sample_id"
+  } else if ("patient_id" %in% names(incoming)) {
+    "patient_id"
+  } else {
+    return(incoming)
+  }
+  add_cols <- setdiff(names(incoming), key)
+  if (length(add_cols) == 0L) {
+    return(existing)
+  }
+  idx <- match(existing[[key]], incoming[[key]])
+  for (col in add_cols) {
+    vals <- incoming[[col]][idx]
+    if (col %in% names(existing)) {
+      fill <- is.na(existing[[col]]) | existing[[col]] == ""
+      existing[[col]][fill] <- vals[fill]
+    } else {
+      existing[[col]] <- vals
+    }
+  }
+  existing
 }
 
 extract_vpd_survival <- function(se, samples) {
@@ -204,6 +406,9 @@ parse_cells_table <- function(df) {
     cell_type <- as.character(df[[ct_col]])
   }
 
+  tissue_col <- pick_col_name(df, c("tissue_category", "tissue.region",
+                                    "tissue_region"))
+
   cells <- data.table::data.table(
     sample_id  = if (!is.null(sample_col)) as.character(df[[sample_col]]) else "sample_1",
     patient_id = if (!is.null(patient_col)) as.character(df[[patient_col]]) else NA_character_,
@@ -211,6 +416,9 @@ parse_cells_table <- function(df) {
     y          = as.numeric(df[[y_col]]),
     cell_type  = cell_type
   )
+  if (!is.null(tissue_col)) {
+    cells$tissue_category <- as.character(df[[tissue_col]])
+  }
   if (all(is.na(cells$patient_id))) cells$patient_id <- cells$sample_id
 
   for (col in phen_cols) {
@@ -221,6 +429,32 @@ parse_cells_table <- function(df) {
   cells <- cells[!is.na(x) & !is.na(y)]
   if (nrow(cells) == 0L) stop("No valid rows after parsing.", call. = FALSE)
   cells
+}
+
+#' Parse a Parquet file uploaded by the user.
+#'
+#' Requires the `arrow` package. The file must contain x/y coordinates and
+#' either `phenotype_*` columns or a `cell_type` column, matching the same
+#' schema expected by `parse_cells_csv`.
+parse_cells_parquet <- function(path) {
+  if (!requireNamespace("arrow", quietly = TRUE)) {
+    stop(
+      "Package 'arrow' is required to read Parquet files. ",
+      "Install with: install.packages('arrow')",
+      call. = FALSE
+    )
+  }
+  if (!file.exists(path)) {
+    stop(sprintf("Parquet file not found: %s", path), call. = FALSE)
+  }
+  df <- tryCatch(
+    as.data.frame(arrow::read_parquet(path)),
+    error = function(e) {
+      stop(sprintf("Failed to read Parquet: %s", e$message), call. = FALSE)
+    }
+  )
+  if (nrow(df) == 0L) stop("Parquet file contains no rows", call. = FALSE)
+  parse_cells_table(df)
 }
 
 #' Parse a Vectra-style cell CSV/TSV uploaded by the user.
@@ -253,12 +487,25 @@ parse_survival_table <- function(df, stop_on_missing = TRUE) {
                                   "os_time", "futime"))
   status_col <- pick_col_name(df, c("status", "event", "death",
                                     "survival_status", "os_status", "fustat"))
-  if (is.null(id_col) || is.null(time_col) || is.null(status_col)) {
+  if (is.null(id_col)) {
     if (stop_on_missing) {
       stop("Survival table must include id (sample_id/patient_id), time, status.",
            call. = FALSE)
     }
     return(NULL)
+  }
+  if (is.null(time_col) || is.null(status_col)) {
+    if (stop_on_missing) {
+      stop("Survival table must include id (sample_id/patient_id), time, status.",
+           call. = FALSE)
+    }
+    out <- data.frame(
+      sample_id = as.character(df[[id_col]]),
+      stringsAsFactors = FALSE
+    )
+    extras <- setdiff(names(df), id_col)
+    for (col in extras) out[[col]] <- df[[col]]
+    return(dedupe_survival_by_sample(out))
   }
 
   out <- data.frame(
@@ -269,14 +516,41 @@ parse_survival_table <- function(df, stop_on_missing = TRUE) {
   )
   extras <- setdiff(names(df), c(id_col, time_col, status_col))
   for (col in extras) out[[col]] <- df[[col]]
-  out
+  dedupe_survival_by_sample(out)
+}
+
+#' Keep one clinical row per sample_id (cell-level exports often repeat ids).
+dedupe_survival_by_sample <- function(surv_df) {
+  if (is.null(surv_df) || nrow(surv_df) == 0L) return(surv_df)
+  if (!"sample_id" %in% names(surv_df)) return(surv_df)
+  surv_df[!duplicated(surv_df$sample_id), , drop = FALSE]
 }
 
 #' Extract one survival row per sample/patient from a cell-level table.
 extract_survival_from_table <- function(df) {
   surv <- parse_survival_table(df, stop_on_missing = FALSE)
   if (is.null(surv)) return(NULL)
-  surv[!duplicated(surv$sample_id), , drop = FALSE]
+  dedupe_survival_by_sample(surv)
+}
+
+#' Parse a clinical supplement CSV (sample_id + covariates, no time/status).
+parse_clinical_supplement_csv <- function(path) {
+  if (!file.exists(path)) {
+    stop(sprintf("File not found: %s", path), call. = FALSE)
+  }
+  sep <- if (grepl("\\.tsv$", path, ignore.case = TRUE)) "\t" else ","
+  df <- vroom::vroom(path, delim = sep, show_col_types = FALSE,
+                     .name_repair = "minimal")
+  if (nrow(df) == 0L) stop("CSV contains no rows", call. = FALSE)
+  out <- parse_survival_table(df, stop_on_missing = FALSE)
+  if (is.null(out) || nrow(out) == 0L) {
+    stop(
+      "Clinical supplement CSV must include sample_id (or patient_id) and at ",
+      "least one covariate column (e.g. race).",
+      call. = FALSE
+    )
+  }
+  out
 }
 
 #' Parse a survival metadata CSV. Required columns: time, status; plus
@@ -394,10 +668,9 @@ build_uploaded_dataset <- function(id, title, cells, survival = NULL,
   samples <- build_sample_summary(cells)
 
   surv_df <- if (!is.null(survival)) {
-    # Make sure every survival row maps to a sample we have cells for.
     keep <- survival$sample_id %in% samples$sample_id |
             survival$sample_id %in% samples$patient_id
-    survival[keep, , drop = FALSE]
+    dedupe_survival_by_sample(survival[keep, , drop = FALSE])
   } else {
     data.frame()
   }
@@ -479,4 +752,38 @@ pick_col_name <- function(df, candidates) {
     if (!is.na(hit)) return(unname(hit))
   }
   NULL
+}
+
+#' Return sorted tissue-region labels when a tissue_category column exists.
+tissue_region_choices <- function(cells) {
+  if (is.null(cells) || nrow(cells) == 0L ||
+      !"tissue_category" %in% names(cells)) {
+    return(character())
+  }
+  vals <- unique(as.character(cells$tissue_category))
+  vals <- vals[!is.na(vals) & nzchar(vals)]
+  sort(vals)
+}
+
+#' Restrict cells to one tissue region (Tumor, Stroma, etc.).
+filter_cells_by_region <- function(cells, region = NULL) {
+  if (is.null(cells) || nrow(cells) == 0L) return(cells)
+  if (is.null(region) || !nzchar(as.character(region)) ||
+      tolower(as.character(region)) %in% c("all", "any")) {
+    return(cells)
+  }
+  if (!"tissue_category" %in% names(cells)) {
+    stop(
+      "This dataset has no tissue_category column; region filter is unavailable.",
+      call. = FALSE
+    )
+  }
+  region_norm <- tolower(as.character(region))
+  keep <- tolower(as.character(cells$tissue_category)) == region_norm
+  filtered <- cells[keep]
+  if (nrow(filtered) == 0L) {
+    stop(sprintf("No cells remain after filtering to tissue region '%s'.",
+                 region), call. = FALSE)
+  }
+  filtered
 }

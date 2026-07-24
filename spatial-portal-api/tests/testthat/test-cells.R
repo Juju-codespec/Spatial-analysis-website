@@ -31,6 +31,24 @@ test_that("parse_cells_csv reads a multi-phenotype CSV", {
                   c("CD8+ T Cell", "T Cell", "Other"))
 })
 
+test_that("parse_cells_parquet reads a multi-phenotype Parquet file", {
+  skip_if_not_installed("arrow")
+  pq <- tempfile(fileext = ".parquet")
+  on.exit(unlink(pq), add = TRUE)
+  df <- data.frame(
+    sample_id = rep("s1", 3),
+    x = c(10.1, 20.2, 30.3),
+    y = c(50.5, 60.6, 70.7),
+    phenotype_cd3 = c("CD3+", "CD3+", "CD3-"),
+    phenotype_cd8 = c("CD8+", "CD8-", "CD8-"),
+    stringsAsFactors = FALSE
+  )
+  arrow::write_parquet(df, pq)
+  cells <- parse_cells_parquet(pq)
+  expect_equal(nrow(cells), 3L)
+  expect_setequal(unique(cells$cell_type), c("CD8+ T Cell", "T Cell", "Other"))
+})
+
 test_that("parse_cells_csv rejects CSVs missing x/y coords", {
   csv <- tempfile(fileext = ".csv")
   write.csv(data.frame(a = 1, b = 2), csv, row.names = FALSE)
@@ -101,6 +119,83 @@ test_that("parse_rds_upload rejects survival-only data.frames", {
     parse_rds_upload(path, id = "upload-bad"),
     "x/y coordinate"
   )
+})
+
+test_that("VPD hub loaders match current VectraPolarisData exports", {
+  skip_if_not_installed("VectraPolarisData")
+  exports <- getNamespaceExports("VectraPolarisData")
+  expect_true("HumanLungCancerV3" %in% exports)
+  expect_true("HumanOvarianCancerVP" %in% exports)
+  expect_false("VectraPolarisData" %in% exports)
+})
+
+test_that("merge_survival_clinical adds race without replacing time/status", {
+  existing <- data.frame(
+    sample_id = c("s1", "s2"),
+    time = c(10, 20),
+    status = c(0L, 1L),
+    stage = c("3", "4"),
+    stringsAsFactors = FALSE
+  )
+  incoming <- data.frame(
+    sample_id = c("s1", "s2"),
+    race = c("White", "Black"),
+    stringsAsFactors = FALSE
+  )
+  merged <- merge_survival_clinical(existing, incoming)
+  expect_equal(merged$time, existing$time)
+  expect_equal(merged$race, incoming$race)
+})
+
+test_that("vpd-ovarian survival omits synthetic sex column", {
+  skip_if_not_installed("VectraPolarisData")
+  skip_if_not_installed("SpatialExperiment")
+  cache <- tempfile("vpd-ovarian-clinical-")
+  dir.create(cache)
+  old_cache <- Sys.getenv("DATA_CACHE", unset = NA)
+  old_vpd <- Sys.getenv("ENABLE_VPD", unset = NA)
+  Sys.setenv(DATA_CACHE = cache, ENABLE_VPD = "true")
+  cfg_reset()
+  on.exit({
+    if (is.na(old_cache)) Sys.unsetenv("DATA_CACHE") else Sys.setenv(DATA_CACHE = old_cache)
+    if (is.na(old_vpd)) Sys.unsetenv("ENABLE_VPD") else Sys.setenv(ENABLE_VPD = old_vpd)
+    cfg_reset()
+  }, add = TRUE)
+  ds <- load_vpd_dataset("vpd-ovarian")
+  expect_false("sex" %in% names(ds$survival))
+})
+
+test_that("vpd-ovarian merges race from supplement CSV", {
+  skip_if_not_installed("VectraPolarisData")
+  skip_if_not_installed("SpatialExperiment")
+  cache <- tempfile("vpd-ovarian-race-")
+  dir.create(cache)
+  extdir <- file.path(tempdir(), "vpd-race-ext")
+  dir.create(extdir, showWarnings = FALSE)
+  race_csv <- file.path(extdir, "vpd_ovarian_race.csv")
+  old_cache <- Sys.getenv("DATA_CACHE", unset = NA)
+  old_vpd <- Sys.getenv("ENABLE_VPD", unset = NA)
+  old_race <- Sys.getenv("VPD_OVARIAN_RACE_CSV", unset = NA)
+  Sys.setenv(DATA_CACHE = cache, ENABLE_VPD = "true",
+             VPD_OVARIAN_RACE_CSV = race_csv)
+  cfg_reset()
+  on.exit({
+    if (is.na(old_cache)) Sys.unsetenv("DATA_CACHE") else Sys.setenv(DATA_CACHE = old_cache)
+    if (is.na(old_vpd)) Sys.unsetenv("ENABLE_VPD") else Sys.setenv(ENABLE_VPD = old_vpd)
+    if (is.na(old_race)) Sys.unsetenv("VPD_OVARIAN_RACE_CSV") else Sys.setenv(VPD_OVARIAN_RACE_CSV = old_race)
+    cfg_reset()
+  }, add = TRUE)
+  ds0 <- load_vpd_dataset("vpd-ovarian")
+  write.csv(
+    data.frame(sample_id = ds0$survival$sample_id[1:3],
+               race = c("White", "Black", "Asian"),
+               stringsAsFactors = FALSE),
+    race_csv,
+    row.names = FALSE
+  )
+  ds <- load_vpd_dataset("vpd-ovarian")
+  expect_true("race" %in% names(ds$survival))
+  expect_equal(ds$survival$race[1:3], c("White", "Black", "Asian"))
 })
 
 test_that("parse_cells_table uses patient_id as sample_id when sample_id missing", {

@@ -2,8 +2,10 @@
 
 R backend service for the Spatial Portal web application. Ingests
 Vectra Polaris / VPD-style tumor imaging data, computes spatial
-statistics for T-cell populations, and links them to survival outcomes
-via Cox proportional hazards models.
+statistics for T-cell populations, and supports **Clinical Analysis**:
+user-uploaded clinical metadata merged with image-derived cell counts,
+percentages, and ratios (group tests, linear/logistic models, Kaplan–Meier,
+log-rank, and Cox models).
 
 ```
 +----------------+      REST + CORS      +-------------------------+
@@ -24,10 +26,17 @@ via Cox proportional hazards models.
 | GET    | `/datasets`                       | List bundled VPD demos + user uploads                       |
 | GET    | `/datasets/:id`                   | Metadata, sample list, cell-type counts, survival columns   |
 | GET    | `/datasets/:id/cells`             | Downsampled cells for plotting                              |
-| POST   | `/datasets`                       | Multipart upload (`cells` CSV/TSV, or `rds`/`spe` SpatialExperiment) |
+| POST   | `/datasets`                       | Multipart upload (`cells` CSV/TSV/Parquet, or `rds`/`spe` SpatialExperiment) |
 | POST   | `/analyze/ripleys-k`              | Per-sample Ripley K (`Kest` / `Kcross`); optionally async   |
 | POST   | `/analyze/nn-g`                   | Per-sample Nearest-Neighbour G (`Gest` / `Gcross`)          |
 | POST   | `/analyze/cox`                    | Cox PH using a per-sample K/G summary at a chosen radius    |
+| GET    | `/datasets/:id/clinical-features` | Image-derived cell counts, %, ratios (sample or patient)  |
+| GET    | `/datasets/:id/clinical-summary`  | Merged markers + clinical columns for summary plots       |
+| POST   | `/analyze/clinical/summary-tests` | Tests for marker × clinical variable pairs                |
+| POST   | `/analyze/clinical/wilcoxon`      | Clinical group comparison on a cell feature               |
+| POST   | `/analyze/clinical/linear`        | Linear/logistic models (cell features + clinical covariates)|
+| POST   | `/analyze/clinical/survival`      | KM, log-rank, Cox on a cell feature                       |
+| POST   | `/datasets/:id/survival`            | Attach clinical CSV to an existing dataset                  |
 | GET    | `/jobs/:id`                       | Status of an async analysis job                             |
 
 Interactive docs are mounted by plumber at `/__docs__/`.
@@ -52,19 +61,29 @@ Two `SpatialExperiment` objects from the
 Bioconductor package are exposed as lazy datasets:
 
 - `vpd-lung` — `HumanLungCancerV3` (non-small-cell lung cancer)
-- `vpd-ovarian` — `HumanOvarianCancerVP` (ovarian cancer)
+- `vpd-ovarian` — `HumanOvarianCancerVP` (ovarian cancer; bundled stage, grade, survival, etc.)
 
 They are fetched from ExperimentHub on first request and then cached as
-RDS under `data-cache/`.
+RDS under `data-cache/`. **Race** is not in the public VectraPolarisData
+metadata; add it via one of:
+
+- `POST /datasets/vpd-ovarian/survival` with a supplement CSV (`sample_id`, `race` only — merged into existing clinical rows)
+- `VPD_OVARIAN_RACE_CSV` or `inst/extdata/vpd_ovarian_race.csv` (see `scripts/export_vpd_ovarian_race_template.R`)
+- `data/ovarian/Ovarian_clinical.csv` (full source file, if you have it from the study authors)
+
+Lung/ovarian uploads can also attach extra clinical columns via `POST /datasets/:id/survival`
+or include them in `POST /datasets`.
 
 ### User uploads (`source: upload`)
 
 `POST /datasets` accepts multipart form data:
 
-- `cells` (CSV/TSV) **or** `rds` / `spe` (`.rds` containing a `SpatialExperiment`, portal dataset list, or cell-level `data.frame` with `x`/`y` and `cell_type`)
-  - CSV: `x`, `y` columns and either `phenotype_*` boolean columns or a `cell_type` column
-- `survival` (optional): CSV/TSV with `sample_id`, `time`, `status`,
-  plus any covariate columns to use in the Cox model.
+- `cells` (CSV/TSV/Parquet) **or** `rds` / `spe` (`.rds` containing a `SpatialExperiment`, portal dataset list, or cell-level `data.frame` with `x`/`y` and `cell_type`)
+  - CSV/Parquet: `x`, `y` (or `cell_x_position`, `cell_y_position`) and either `phenotype_*` columns or a `cell_type` column. Parquet requires the `arrow` R package.
+- `survival` / clinical CSV (recommended): `sample_id` (or `patient_id`),
+  `time`, `status`, plus columns such as `stage`, `grade`, `treatment`,
+  `recurrence`, `brca_status`, and `race` for Clinical Analysis models.
+  Supplement uploads (no `time`/`status`) merge new columns into existing metadata.
 
 Spatial analysis endpoints accept `minFocalCells` (default 10) to exclude weak samples, and default to CSR permutation envelopes (`nsim=49`) with async jobs for large datasets.
 
