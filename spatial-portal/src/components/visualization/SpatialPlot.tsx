@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { Dataset, CellPoint } from '../../types';
-import { ZoomIn, ZoomOut, Maximize2, RotateCcw } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Download } from 'lucide-react';
+import { downloadCsv } from '../../utils/export';
+
+// Shared zoom/layout constants so the wheel handler, buttons, and draw loop
+// all agree on the same geometry.
+const PADDING = 60;
+const MIN_ZOOM = 0.3;
+const MAX_ZOOM = 20;
 
 // Compute the equal-scale origin that centres the data cloud within the canvas.
 function scaleAndOrigin(
@@ -112,15 +119,16 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
     if (!cells.length) return;
 
     const { minX, minY, rangeX, rangeY } = bounds;
-    const padding = 60;
-    const { scale, originX, originY } = scaleAndOrigin(W, H, rangeX, rangeY, zoom, padding);
+    const { scale, originX, originY } = scaleAndOrigin(W, H, rangeX, rangeY, zoom, PADDING);
 
     const toScreen = (x: number, y: number) => ({
       sx: originX + (x - minX) * scale + pan.x,
       sy: originY + (y - minY) * scale + pan.y,
     });
 
-    const r = miniMode ? 2 : Math.max(2, 4 * zoom);
+    // Cap the circle radius so deep zoom (needed to separate dense clusters)
+    // doesn't balloon individual cells into oversized blobs.
+    const r = miniMode ? 2 : Math.min(16, Math.max(2, 4 * zoom));
 
     for (const cell of cells) {
       const isVisible = visibleLayers.has(cell.cellType) ||
@@ -183,11 +191,34 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
     return () => cancelAnimationFrame(animFrameRef.current);
   }, [draw]);
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.12 : 0.9;
-    setZoom(z => Math.max(0.3, Math.min(10, z * factor)));
-  };
+  // Zoom while keeping the world point under (canvasX, canvasY) fixed on
+  // screen. Without this, `scaleAndOrigin` re-centres the fitted view on
+  // every zoom step, so any panning the user did gets silently undone and
+  // the image appears to "jump" — this is what made zooming feel broken.
+  const applyZoom = useCallback((
+    canvasX: number,
+    canvasY: number,
+    computeNext: (current: number) => number,
+  ) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const { minX, minY, rangeX, rangeY } = bounds;
+    setZoom(currentZoom => {
+      const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, computeNext(currentZoom)));
+      if (nextZoom === currentZoom) return currentZoom;
+      const oldGeom = scaleAndOrigin(canvas.width, canvas.height, rangeX, rangeY, currentZoom, PADDING);
+      const newGeom = scaleAndOrigin(canvas.width, canvas.height, rangeX, rangeY, nextZoom, PADDING);
+      setPan(currentPan => {
+        const worldX = (canvasX - oldGeom.originX - currentPan.x) / oldGeom.scale + minX;
+        const worldY = (canvasY - oldGeom.originY - currentPan.y) / oldGeom.scale + minY;
+        return {
+          x: canvasX - newGeom.originX - (worldX - minX) * newGeom.scale,
+          y: canvasY - newGeom.originY - (worldY - minY) * newGeom.scale,
+        };
+      });
+      return nextZoom;
+    });
+  }, [bounds]);
 
   // Returns mouse position in canvas-internal pixel space and display pixel space.
   // The canvas has a fixed internal resolution (width/height attrs) but is scaled
@@ -201,6 +232,23 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
     const displayX = e.clientX - rect.left;
     const displayY = e.clientY - rect.top;
     return { cx: displayX * ratioX, cy: displayY * ratioY, displayX, displayY };
+  };
+
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const coords = getCanvasCoords(e);
+    if (!coords) return;
+    // Proportional to scroll delta so both notchy mice and smooth trackpads
+    // feel consistent, and zoom anchors on the cursor instead of re-centring.
+    const factor = Math.exp(-e.deltaY * 0.0018);
+    applyZoom(coords.cx, coords.cy, z => z * factor);
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    if (miniMode) return;
+    const coords = getCanvasCoords(e);
+    if (!coords) return;
+    applyZoom(coords.cx, coords.cy, z => z * 1.8);
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -233,9 +281,8 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
       if (!canvas) return;
 
       const { minX, minY, rangeX, rangeY } = bounds;
-      const padding = 60;
       const { scale, originX, originY } = scaleAndOrigin(
-        canvas.width, canvas.height, rangeX, rangeY, zoom, padding,
+        canvas.width, canvas.height, rangeX, rangeY, zoom, PADDING,
       );
 
       const worldX = (coords.cx - originX - pan.x) / scale + minX;
@@ -262,40 +309,85 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
   const handleMouseUp = () => setDragging(false);
   const reset = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
 
+  const handleExportCsv = useCallback(() => {
+    if (!dataset.cells.length) return;
+    const markerKeys = Array.from(
+      dataset.cells.reduce((keys, c) => {
+        for (const k of Object.keys(c.markers)) keys.add(k);
+        return keys;
+      }, new Set<string>()),
+    );
+    const columns = ['x', 'y', 'cell_type', 'sample_id', 'region', 'cluster', ...markerKeys];
+    const rows = dataset.cells.map(c => ({
+      x: c.x,
+      y: c.y,
+      cell_type: c.cellType,
+      sample_id: c.sampleId ?? '',
+      region: c.region ?? '',
+      cluster: c.cluster ?? '',
+      ...Object.fromEntries(markerKeys.map(k => [k, c.markers[k] ?? ''])),
+    }));
+    downloadCsv(rows, `spatial-cells-${dataset.id}.csv`, columns);
+  }, [dataset.cells, dataset.id]);
+
   return (
     <div ref={containerRef} className="relative rounded-xl overflow-hidden border border-slate-800" style={{ height }}>
       <canvas
         ref={canvasRef}
-        className="w-full h-full cursor-crosshair"
-        style={{ cursor: dragging ? 'grabbing' : 'crosshair' }}
+        className="w-full h-full"
+        style={{ cursor: dragging ? 'grabbing' : 'grab' }}
         onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={() => { setDragging(false); setHoveredCell(null); }}
+        onDoubleClick={handleDoubleClick}
       />
 
       {!miniMode && (
         <>
           {/* Controls */}
           <div className="absolute top-3 right-3 flex flex-col gap-1.5">
-            <button onClick={() => setZoom(z => Math.min(10, z * 1.3))} className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors">
+            <button
+              title="Export CSV"
+              onClick={handleExportCsv}
+              disabled={!dataset.cells.length}
+              className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Download size={12} />
+            </button>
+            <div className="h-px bg-slate-800 mx-1" />
+            <button
+              title="Zoom in"
+              onClick={() => {
+                const canvas = canvasRef.current;
+                if (canvas) applyZoom(canvas.width / 2, canvas.height / 2, z => z * 1.3);
+              }}
+              className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
+            >
               <ZoomIn size={13} />
             </button>
-            <button onClick={() => setZoom(z => Math.max(0.3, z * 0.77))} className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors">
+            <button
+              title="Zoom out"
+              onClick={() => {
+                const canvas = canvasRef.current;
+                if (canvas) applyZoom(canvas.width / 2, canvas.height / 2, z => z / 1.3);
+              }}
+              className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
+            >
               <ZoomOut size={13} />
             </button>
-            <button onClick={reset} className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors">
+            <button title="Reset view" onClick={reset} className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors">
               <RotateCcw size={12} />
             </button>
-            <button className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors">
+            <button title="Fit to view" onClick={reset} className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors">
               <Maximize2 size={12} />
             </button>
           </div>
 
           {/* Zoom indicator */}
           <div className="absolute bottom-3 left-3 text-[10px] font-mono text-slate-600 bg-slate-900/80 px-2 py-0.5 rounded">
-            {Math.round(zoom * 100)}% · {dataset.cellCount.toLocaleString()} cells
+            {Math.round(zoom * 100)}% · {dataset.cellCount.toLocaleString()} cells · scroll to zoom · drag to pan · double-click to zoom in
           </div>
 
           {/* Hover tooltip */}
