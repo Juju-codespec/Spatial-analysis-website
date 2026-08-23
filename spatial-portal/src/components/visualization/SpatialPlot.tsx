@@ -54,6 +54,11 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const animFrameRef = useRef<number>(0);
   const hoverRafRef = useRef<number>(0);
+  // Last cursor position seen over the canvas (in canvas-internal pixel
+  // space), so the +/- zoom buttons can anchor on "wherever the mouse is"
+  // too, not just the canvas center. Persists after the cursor moves onto
+  // the button itself (a sibling overlay), which is exactly what we want.
+  const lastPointerRef = useRef<{ cx: number; cy: number } | null>(null);
   // drawRef lets the ResizeObserver always call the latest draw without
   // needing to be re-registered every time draw changes.
   const drawRef = useRef<() => void>(() => {});
@@ -223,7 +228,9 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
   // Returns mouse position in canvas-internal pixel space and display pixel space.
   // The canvas has a fixed internal resolution (width/height attrs) but is scaled
   // by CSS to fill the container, so raw clientX/Y must be scaled to match.
-  const getCanvasCoords = (e: React.MouseEvent) => {
+  // Accepts both React's synthetic events and native DOM events (clientX/Y is
+  // the only thing needed) since the wheel handler below is attached natively.
+  const getCanvasCoords = useCallback((e: { clientX: number; clientY: number }) => {
     const canvas = canvasRef.current;
     const rect = canvas?.getBoundingClientRect();
     if (!canvas || !rect) return null;
@@ -232,17 +239,30 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
     const displayX = e.clientX - rect.left;
     const displayY = e.clientY - rect.top;
     return { cx: displayX * ratioX, cy: displayY * ratioY, displayX, displayY };
-  };
+  }, []);
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
+  // Attached natively (not via React's onWheel prop) with `passive: false`.
+  // Browsers/React may treat JSX-bound wheel listeners as passive, which
+  // makes `preventDefault()` silently fail — the page would then scroll
+  // right along with the zoom. A native listener guarantees it's blocked.
+  const handleWheel = useCallback((e: WheelEvent) => {
+    if (miniMode) return;
     const coords = getCanvasCoords(e);
     if (!coords) return;
+    lastPointerRef.current = { cx: coords.cx, cy: coords.cy };
+    e.preventDefault();
     // Proportional to scroll delta so both notchy mice and smooth trackpads
     // feel consistent, and zoom anchors on the cursor instead of re-centring.
     const factor = Math.exp(-e.deltaY * 0.0018);
     applyZoom(coords.cx, coords.cy, z => z * factor);
-  };
+  }, [applyZoom, getCanvasCoords, miniMode]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
 
   const handleDoubleClick = (e: React.MouseEvent) => {
     if (miniMode) return;
@@ -261,6 +281,7 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
   const handleMouseMove = (e: React.MouseEvent) => {
     const coords = getCanvasCoords(e);
     if (!coords) return;
+    lastPointerRef.current = { cx: coords.cx, cy: coords.cy };
 
     if (dragging) {
       setPan({ x: coords.cx - dragStart.x, y: coords.cy - dragStart.y });
@@ -307,7 +328,7 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
   }, []);
 
   const handleMouseUp = () => setDragging(false);
-  const reset = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+  const reset = () => { setZoom(1); setPan({ x: 0, y: 0 }); lastPointerRef.current = null; };
 
   const handleExportCsv = useCallback(() => {
     if (!dataset.cells.length) return;
@@ -331,12 +352,11 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
   }, [dataset.cells, dataset.id]);
 
   return (
-    <div ref={containerRef} className="relative rounded-xl overflow-hidden border border-slate-800" style={{ height }}>
+    <div ref={containerRef} className="relative rounded-xl overflow-hidden border border-slate-800" style={{ height, overscrollBehavior: 'contain' }}>
       <canvas
         ref={canvasRef}
         className="w-full h-full"
         style={{ cursor: dragging ? 'grabbing' : 'grab' }}
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -361,7 +381,9 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
               title="Zoom in"
               onClick={() => {
                 const canvas = canvasRef.current;
-                if (canvas) applyZoom(canvas.width / 2, canvas.height / 2, z => z * 1.3);
+                if (!canvas) return;
+                const anchor = lastPointerRef.current ?? { cx: canvas.width / 2, cy: canvas.height / 2 };
+                applyZoom(anchor.cx, anchor.cy, z => z * 1.3);
               }}
               className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
             >
@@ -371,7 +393,9 @@ export default function SpatialPlot({ dataset, activeMarker, miniMode = false, h
               title="Zoom out"
               onClick={() => {
                 const canvas = canvasRef.current;
-                if (canvas) applyZoom(canvas.width / 2, canvas.height / 2, z => z / 1.3);
+                if (!canvas) return;
+                const anchor = lastPointerRef.current ?? { cx: canvas.width / 2, cy: canvas.height / 2 };
+                applyZoom(anchor.cx, anchor.cy, z => z / 1.3);
               }}
               className="w-7 h-7 bg-slate-900/90 border border-slate-700 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
             >
